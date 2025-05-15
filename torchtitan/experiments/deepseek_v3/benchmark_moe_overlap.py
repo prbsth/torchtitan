@@ -32,88 +32,96 @@ def benchmark_moe_implementations(args):
         print(f"  - {model_args.num_hidden_layers} layers")
         print(f"  - Batch size: {args.batch_size}, Sequence length: {args.seq_len}")
     
-    # Create model
-    with device, mesh:
-        model = DeepseekForCausalLM(model_args)
-    
-    # Enable symmetric memory for both implementations
-    # (we'll toggle the shuffle method later)
-    model.setup_symm_mem(torch.bfloat16, device)
-    model.train()
-    
-    # Create optimizer (for completeness in training benchmark)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
-    
     # Create synthetic data
     batch_size = args.batch_size
     seq_len = args.seq_len
-    x = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
-    labels = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
     
     # Loss function
     loss_fn = torch.nn.CrossEntropyLoss()
     
+    # BENCHMARK 1: TRADITIONAL METHOD (without overlap)
+    with device, mesh:
+        vanilla_model = DeepseekForCausalLM(model_args)
+    
+    vanilla_model.train()
+    
+    x_vanilla = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
+    labels_vanilla = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
+    
     # Warmup
     for _ in range(3):
-        output = model(x)
+        output = vanilla_model(x_vanilla)
         if output.dim() == 3:  # [batch, seq, vocab]
-            loss = loss_fn(output.reshape(-1, output.size(-1)), labels.reshape(-1))
+            loss = loss_fn(output.reshape(-1, output.size(-1)), labels_vanilla.reshape(-1))
         else:
-            loss = loss_fn(output, labels)
+            loss = loss_fn(output, labels_vanilla)
         loss.backward()
-        optimizer.zero_grad()
+        vanilla_model.zero_grad()
     
-    # Benchmark with overlap (symm_mem with streams)
     if rank == 0:
-        print("\nBenchmarking WITH Comet overlap...")
-    
-    # Set the shuffle method to symm_mem 
-    for layer in model.model.layers.values():
-        if hasattr(layer.mlp, 'shuffle_method'):
-            layer.mlp.shuffle_method = "symm_mem"
+        print("\nBenchmarking WITHOUT overlap (traditional all-to-all)...")
     
     torch.cuda.synchronize()
     start = time.time()
     
     for i in range(args.iterations):
-        output = model(x)
+        output = vanilla_model(x_vanilla)
         if output.dim() == 3:
-            loss = loss_fn(output.reshape(-1, output.size(-1)), labels.reshape(-1))
+            loss = loss_fn(output.reshape(-1, output.size(-1)), labels_vanilla.reshape(-1))
         else:
-            loss = loss_fn(output, labels)
+            loss = loss_fn(output, labels_vanilla)
         loss.backward()
         
         if rank == 0 and i == 0:
-            print(f"Loss: {loss.item():.4f}")
+            print(f"Loss (traditional): {loss.item():.4f}")
         
-        optimizer.zero_grad()
+        vanilla_model.zero_grad()
     
     torch.cuda.synchronize()
-    overlap_time = (time.time() - start) / args.iterations * 1000
+    vanilla_time = (time.time() - start) / args.iterations * 1000
     
-    # Benchmark without overlap (traditional all-to-all)
+    # BENCHMARK 2: SYMMETRIC MEMORY WITH OVERLAP
+    with device, mesh:
+        overlap_model = DeepseekForCausalLM(model_args)
+    
+    # Enable symmetric memory for both implementations
+    overlap_model.setup_symm_mem(torch.bfloat16, device)
+    overlap_model.train()
+    
+    x_overlap = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
+    labels_overlap = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
+    
+    # Warmup
+    for _ in range(3):
+        output = overlap_model(x_overlap)
+        if output.dim() == 3:
+            loss = loss_fn(output.reshape(-1, output.size(-1)), labels_overlap.reshape(-1))
+        else:
+            loss = loss_fn(output, labels_overlap)
+        loss.backward()
+        overlap_model.zero_grad()
+    
     if rank == 0:
-        print("\nBenchmarking WITHOUT overlap...")
-    
-    # Change the shuffle method
-    for layer in model.model.layers.values():
-        if hasattr(layer.mlp, 'shuffle_method'):
-            layer.mlp.shuffle_method = "torch_all_to_all"
+        print("\nBenchmarking WITH Comet overlap...")
     
     torch.cuda.synchronize()
     start = time.time()
     
     for i in range(args.iterations):
-        output = model(x)
+        output = overlap_model(x_overlap)
         if output.dim() == 3:
-            loss = loss_fn(output.reshape(-1, output.size(-1)), labels.reshape(-1))
+            loss = loss_fn(output.reshape(-1, output.size(-1)), labels_overlap.reshape(-1))
         else:
-            loss = loss_fn(output, labels)
+            loss = loss_fn(output, labels_overlap)
         loss.backward()
-        optimizer.zero_grad()
+        
+        if rank == 0 and i == 0:
+            print(f"Loss (overlap): {loss.item():.4f}")
+        
+        overlap_model.zero_grad()
     
     torch.cuda.synchronize()
-    vanilla_time = (time.time() - start) / args.iterations * 1000
+    overlap_time = (time.time() - start) / args.iterations * 1000
     
     # Report results
     tokens_per_batch = batch_size * seq_len
