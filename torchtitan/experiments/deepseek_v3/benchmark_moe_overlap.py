@@ -2,7 +2,6 @@ import time
 import torch
 import torch.distributed as dist
 from torch.distributed.device_mesh import DeviceMesh
-from torch.distributed.fsdp import fully_shard
 
 from model import DeepseekForCausalLM, MoE
 from model_config import deepseek_config_registry
@@ -13,7 +12,8 @@ def benchmark_moe_implementations(args):
     mesh = dist.init_device_mesh("cuda", (1, args.num_gpus), mesh_dim_names=("pp", "ep"))
     
     rank = dist.get_rank()
-    device = torch.device(f"cuda:{rank}")  # Ensure correct device
+    device = torch.device(f"cuda:{rank}")
+    torch.cuda.set_device(device)  # Explicitly set device
     
     # Model configuration
     model_id = "deepseek-ai/DeepSeek-V2-Lite"
@@ -26,11 +26,15 @@ def benchmark_moe_implementations(args):
     model_args.num_stages = 1
     model_args.stage_idx = 0
     
+    # ======= CRITICAL CHANGE: We're going to run just ONE benchmark per script execution =======
+    # This avoids device conflicts between the two benchmarks
+    
     if rank == 0:
         print(f"Benchmarking MOE with:")
         print(f"  - {model_args.n_routed_experts} total experts across {model_args.ep_size} GPUs")
         print(f"  - {model_args.num_hidden_layers} layers")
         print(f"  - Batch size: {args.batch_size}, Sequence length: {args.seq_len}")
+        print(f"  - Mode: {'With Overlap' if args.use_overlap else 'Traditional (no overlap)'}")
     
     # Create synthetic data
     batch_size = args.batch_size
@@ -39,121 +43,83 @@ def benchmark_moe_implementations(args):
     # Loss function
     loss_fn = torch.nn.CrossEntropyLoss()
     
-    # BENCHMARK 1: TRADITIONAL METHOD (without overlap)
-    torch.cuda.set_device(device)  # Explicitly set device
+    # Create model and move to device
     with mesh:
-        vanilla_model = DeepseekForCausalLM(model_args)
+        model = DeepseekForCausalLM(model_args)
     
-    vanilla_model.train()
+    # If using overlap, enable symmetric memory
+    if args.use_overlap:
+        model.setup_symm_mem(torch.bfloat16, device)
     
-    # Make sure tensors are on the correct device
-    x_vanilla = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
-    labels_vanilla = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
+    model.train()
+    
+    # Ensure input tensors are on the correct device
+    x = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
+    labels = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
     
     # Warmup
     for _ in range(3):
-        output = vanilla_model(x_vanilla)
-        if output.dim() == 3:
-            loss = loss_fn(output.reshape(-1, output.size(-1)), labels_vanilla.reshape(-1))
+        output = model(x)
+        if output.dim() == 3:  # [batch, seq, vocab]
+            loss = loss_fn(output.reshape(-1, output.size(-1)), labels.reshape(-1))
         else:
-            loss = loss_fn(output, labels_vanilla)
+            loss = loss_fn(output, labels)
         loss.backward()
-        vanilla_model.zero_grad()
+        model.zero_grad()
     
+    # Benchmark
     if rank == 0:
-        print("\nBenchmarking WITHOUT overlap (traditional all-to-all)...")
+        print(f"\nBenchmarking {'WITH' if args.use_overlap else 'WITHOUT'} overlap...")
     
     torch.cuda.synchronize()
     start = time.time()
     
     for i in range(args.iterations):
-        output = vanilla_model(x_vanilla)
+        output = model(x)
         if output.dim() == 3:
-            loss = loss_fn(output.reshape(-1, output.size(-1)), labels_vanilla.reshape(-1))
+            loss = loss_fn(output.reshape(-1, output.size(-1)), labels.reshape(-1))
         else:
-            loss = loss_fn(output, labels_vanilla)
+            loss = loss_fn(output, labels)
         loss.backward()
         
         if rank == 0 and i == 0:
-            print(f"Loss (traditional): {loss.item():.4f}")
+            print(f"Loss: {loss.item():.4f}")
         
-        vanilla_model.zero_grad()
+        model.zero_grad()
     
     torch.cuda.synchronize()
-    vanilla_time = (time.time() - start) / args.iterations * 1000
+    elapsed_time = (time.time() - start) / args.iterations * 1000
     
-    # Clean up to avoid memory issues
-    del vanilla_model
-    torch.cuda.empty_cache()
-    dist.barrier()  # Make sure all ranks have completed
+    # Calculate throughput
+    tokens_per_batch = batch_size * seq_len
+    throughput = tokens_per_batch / (elapsed_time / 1000)
     
-    # BENCHMARK 2: SYMMETRIC MEMORY WITH OVERLAP
-    torch.cuda.set_device(device)  # Explicitly set device again
-    with mesh:
-        overlap_model = DeepseekForCausalLM(model_args)
-    
-    # Enable symmetric memory
-    overlap_model.setup_symm_mem(torch.bfloat16, device)
-    overlap_model.train()
-    
-    # Make sure tensors are on the correct device
-    x_overlap = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
-    labels_overlap = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
-    
-    # Warmup
-    for _ in range(3):
-        output = overlap_model(x_overlap)
-        if output.dim() == 3:
-            loss = loss_fn(output.reshape(-1, output.size(-1)), labels_overlap.reshape(-1))
-        else:
-            loss = loss_fn(output, labels_overlap)
-        loss.backward()
-        overlap_model.zero_grad()
-    
-    if rank == 0:
-        print("\nBenchmarking WITH Comet overlap...")
-    
-    torch.cuda.synchronize()
-    start = time.time()
-    
-    for i in range(args.iterations):
-        output = overlap_model(x_overlap)
-        if output.dim() == 3:
-            loss = loss_fn(output.reshape(-1, output.size(-1)), labels_overlap.reshape(-1))
-        else:
-            loss = loss_fn(output, labels_overlap)
-        loss.backward()
-        
-        if rank == 0 and i == 0:
-            print(f"Loss (overlap): {loss.item():.4f}")
-        
-        overlap_model.zero_grad()
-    
-    torch.cuda.synchronize()
-    overlap_time = (time.time() - start) / args.iterations * 1000
-    
-    # Make sure all processes report results
-    dist.barrier()
+    # Gather all times to rank 0
+    all_times = [0.0] * dist.get_world_size()
+    dist.all_gather_object(all_times, elapsed_time)
+    all_throughputs = [0.0] * dist.get_world_size()
+    dist.all_gather_object(all_throughputs, throughput)
     
     # Report results from rank 0 only
-    tokens_per_batch = batch_size * seq_len
     if rank == 0:
+        avg_time = sum(all_times) / len(all_times)
+        avg_throughput = sum(all_throughputs) / len(all_throughputs)
+        
+        # Print in a format that can be easily parsed by the plotting script
+        prefix = "Comet (with overlap)" if args.use_overlap else "Vanilla (no overlap)"
         print(f"\n=== Performance Results ===")
-        print(f"Vanilla (no overlap): {vanilla_time:.2f} ms/iter")
-        print(f"Comet (with overlap): {overlap_time:.2f} ms/iter")
-        print(f"Speedup: {vanilla_time/overlap_time:.2f}x")
-        print(f"Improvement: {((vanilla_time - overlap_time) / vanilla_time * 100):.1f}%")
-        print(f"Tokens/sec vanilla: {tokens_per_batch / (vanilla_time / 1000):.0f}")
-        print(f"Tokens/sec Comet: {tokens_per_batch / (overlap_time / 1000):.0f}")
+        print(f"{prefix}: {avg_time:.2f} ms/iter")
+        print(f"Tokens/sec {'Comet' if args.use_overlap else 'vanilla'}: {avg_throughput:.0f}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark MoE implementation with and without communication-computation overlap")
     parser.add_argument("--num_gpus", type=int, default=4, help="Number of GPUs to use")
     parser.add_argument("--experts_per_gpu", type=int, default=4, help="Number of experts per GPU")
-    parser.add_argument("--num_layers", type=int, default=4, help="Number of transformer layers")
-    parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
-    parser.add_argument("--seq_len", type=int, default=512, help="Sequence length")
+    parser.add_argument("--num_layers", type=int, default=2, help="Number of transformer layers")
+    parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
+    parser.add_argument("--seq_len", type=int, default=128, help="Sequence length")
     parser.add_argument("--iterations", type=int, default=10, help="Number of iterations to benchmark")
+    parser.add_argument("--use_overlap", action="store_true", help="Use overlap implementation")
     args = parser.parse_args()
     
     benchmark_moe_implementations(args)
