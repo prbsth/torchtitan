@@ -1003,9 +1003,19 @@ class MoE(nn.Module):
         # MoE.comp_stream.synchronize()
 
         # Prepare buffer for processed tokens
-        processed_tokens = self.get_gather_buf()
-        processed_tokens[permuted_indices] = local_hidden_outputs
+        # processed_tokens = self.get_gather_buf()
+        # processed_tokens[permuted_indices] = local_hidden_outputs
+        with torch.cuda.stream(MoE.comp_stream):
+            MoE.comp_stream.wait_event(MoE._ready_event)        # fence ⛳
+            contig_tokens = token_gather_buf[permuted_indices]  # safe read
+            hidden_outputs = self._run_group_gemm(
+                contig_tokens, m_sizes, m_offsets
+            )
 
+        MoE.comp_stream.synchronize()   # ensure GEMMs are done
+
+        processed_tokens = self.get_gather_buf()
+        processed_tokens[permuted_indices] = hidden_outputs
         # Shuffle tokens back to their original owners (EP to DP)
         with torch.cuda.stream(MoE.copy_stream):
             token_return_buf, _ = OnDeviceAllToAllV.apply(
