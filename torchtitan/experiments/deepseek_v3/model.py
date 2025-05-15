@@ -988,23 +988,23 @@ class MoE(nn.Module):
         # MoE.copy_stream.synchronize()
 
         # Now process remote tokens that have arrived
-        with torch.cuda.stream(MoE.comp_stream):
-            # wait until copy-stream has finished populating `token_gather_buf`
-            MoE.comp_stream.wait_event(MoE._ready_event)
-            # Get all tokens and run group GEMM
-            contig_tokens = token_gather_buf[permuted_indices]
-            hidden_outputs = self._run_group_gemm(
-                contig_tokens,
-                m_sizes,
-                m_offsets,
-            )
+        # with torch.cuda.stream(MoE.comp_stream):
+        #     # wait until copy-stream has finished populating `token_gather_buf`
+        #     MoE.comp_stream.wait_event(MoE._ready_event)
+        #     # Get all tokens and run group GEMM
+        #     contig_tokens = token_gather_buf[permuted_indices]
+        #     hidden_outputs = self._run_group_gemm(
+        #         contig_tokens,
+        #         m_sizes,
+        #         m_offsets,
+        #     )
 
-        # Ensure computation is complete before reshuffling
-        MoE.comp_stream.synchronize()
+        # # Ensure computation is complete before reshuffling
+        # MoE.comp_stream.synchronize()
 
         # Prepare buffer for processed tokens
         processed_tokens = self.get_gather_buf()
-        processed_tokens[permuted_indices] = hidden_outputs
+        processed_tokens[permuted_indices] = local_hidden_outputs
 
         # Shuffle tokens back to their original owners (EP to DP)
         with torch.cuda.stream(MoE.copy_stream):
