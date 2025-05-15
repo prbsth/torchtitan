@@ -895,152 +895,257 @@ class MoE(nn.Module):
     #     )
 
     #     return final_out
+    # def moe_on_device(self, x, topk_ids, topk_weight):
+    #     (
+    #         sorted_tokens,
+    #         token_indices,
+    #         tokens_per_expert,
+    #     ) = self.sort_tokens(x, topk_ids, topk_weight)
+
+    #     # Keep the seqlen dimension for later use
+    #     seqlen_sorted_tokens = sorted_tokens.shape[0]
+
+    #     print(f"Rank {dist.get_rank()}: sorted_tokens shape: {sorted_tokens.shape}")
+    #     print(f"Rank {dist.get_rank()}: token_send_buf shape: {self.token_send_buf.shape}")
+    #     torch.cuda.current_stream().synchronize()
+    #     # Exchange token count information (no gradient needed)
+    #     with torch.no_grad():
+    #         tokens_per_expert_group = tokens_per_expert.new_empty(
+    #             tokens_per_expert.shape[0]
+    #         )
+    #         dist.all_to_all_single(
+    #             tokens_per_expert_group, tokens_per_expert, group=self.ep_group
+    #         )
+    #         input_splits = tokens_per_expert.view(self.ep_size, -1).sum(dim=1)
+    #         output_splits = tokens_per_expert_group.view(self.ep_size, -1).sum(dim=1)
+
+    #     print(f"Rank {dist.get_rank()}: input_splits: {input_splits}")
+    #     print(f"Rank {dist.get_rank()}: output_splits: {output_splits}")
+
+    #     # Prepare symmetric memory buffers
+    #     token_send_buf = self.get_send_buf()
+    #     token_gather_buf = self.get_gather_buf()
+
+    #     # Copy sorted tokens to send buffer
+    #     token_send_buf[: token_indices.shape[0]].copy_(sorted_tokens)
+
+    #     # Get current stream for later synchronization
+    #     default_stream = torch.cuda.current_stream()
+
+    #     # Start async all-to-all communication on copy stream
+    #     # with torch.cuda.stream(MoE.copy_stream):
+    #     #     token_gather_buf, _ = OnDeviceAllToAllV.apply(
+    #     #         token_send_buf,
+    #     #         input_splits,
+    #     #         self.ep_group,
+    #     #     )
+    #     with torch.cuda.stream(MoE.copy_stream):
+    #         token_gather_buf, _ = OnDeviceAllToAllV.apply(
+    #             token_send_buf,
+    #             input_splits,
+    #             self.ep_group,
+    #         )
+    #         # record “all transfers finished” on the copy stream
+    #         MoE._ready_event.record()
+
+    #     # While communication is in flight, prepare local tokens for computation
+    #     with torch.no_grad():
+    #         # Identify which tokens belong to local experts
+    #         local_expert_start = self.ep_rank * self.experts_per_rank
+    #         local_expert_end = (self.ep_rank + 1) * self.experts_per_rank
+    #         local_expert_mask = (tokens_per_expert[local_expert_start:local_expert_end] > 0)
+            
+    #         # Get local token ranges
+    #         local_tokens_count = tokens_per_expert[local_expert_start:local_expert_end].sum()
+            
+    #         # Compute permutation indices for token reordering  
+    #         permuted_indices, m_sizes, m_offsets = generate_permute_indices(
+    #             tokens_per_expert_group,
+    #             self.experts_per_rank,
+    #             self.ep_size,
+    #             token_gather_buf.shape[0],
+    #             ALIGN_SIZE_M,
+    #         )
+
+    #     # Start computing local experts on compute stream while transfers happen
+    #     with torch.cuda.stream(MoE.comp_stream):
+    #         # Extract local tokens that are already available (no transfer needed)
+    #         local_offset = output_splits[:self.ep_rank].sum()
+    #         local_count = output_splits[self.ep_rank]
+    #         local_token_indices = permuted_indices[local_offset:local_offset + local_count]
+            
+    #         # Get local tokens from gather buffer (these are the ones sent to us)
+    #         contig_local_tokens = token_gather_buf[local_token_indices]
+            
+    #         # Run group GEMM on local tokens
+    #         local_hidden_outputs = self._run_group_gemm(
+    #             contig_local_tokens,
+    #             m_sizes,
+    #             m_offsets,
+    #         )
+
+    #     # Synchronize copy stream to ensure all transfers are complete
+    #     # MoE.copy_stream.synchronize()
+
+    #     # Now process remote tokens that have arrived
+    #     # with torch.cuda.stream(MoE.comp_stream):
+    #     #     # wait until copy-stream has finished populating `token_gather_buf`
+    #     #     MoE.comp_stream.wait_event(MoE._ready_event)
+    #     #     # Get all tokens and run group GEMM
+    #     #     contig_tokens = token_gather_buf[permuted_indices]
+    #     #     hidden_outputs = self._run_group_gemm(
+    #     #         contig_tokens,
+    #     #         m_sizes,
+    #     #         m_offsets,
+    #     #     )
+
+    #     # # Ensure computation is complete before reshuffling
+    #     # MoE.comp_stream.synchronize()
+
+    #     # Prepare buffer for processed tokens
+    #     # processed_tokens = self.get_gather_buf()
+    #     # processed_tokens[permuted_indices] = local_hidden_outputs
+    #     with torch.cuda.stream(MoE.comp_stream):
+    #         MoE.comp_stream.wait_event(MoE._ready_event)        # fence ⛳
+    #         contig_tokens = token_gather_buf[permuted_indices]  # safe read
+    #         hidden_outputs = self._run_group_gemm(
+    #             contig_tokens, m_sizes, m_offsets
+    #         )
+
+    #     MoE.comp_stream.synchronize()   # ensure GEMMs are done
+
+    #     processed_tokens = self.get_gather_buf()
+    #     processed_tokens[permuted_indices] = hidden_outputs
+    #     # Shuffle tokens back to their original owners (EP to DP)
+    #     with torch.cuda.stream(MoE.copy_stream):
+    #         token_return_buf, _ = OnDeviceAllToAllV.apply(
+    #             processed_tokens,
+    #             output_splits,
+    #             self.ep_group,
+    #         )
+
+    #     # Synchronize to ensure return communication is complete
+    #     # MoE.copy_stream.synchronize()
+
+    #     # Restore original token order
+    #     returned_tokens = token_return_buf[:seqlen_sorted_tokens]
+    #     output_tokens = torch.empty_like(returned_tokens)
+    #     output_tokens[token_indices] = returned_tokens
+
+    #     # Apply gating weights and combine expert outputs
+    #     final_out = (
+    #         output_tokens.view(*topk_ids.shape, -1)
+    #         .type(topk_weight.dtype)
+    #         .mul_(topk_weight.unsqueeze(dim=-1))
+    #         .sum(dim=1)
+    #         .type(returned_tokens.dtype)
+    #     )
+
+    #     return final_out
+
     def moe_on_device(self, x, topk_ids, topk_weight):
         (
-            sorted_tokens,
-            token_indices,
-            tokens_per_expert,
+            sorted_tokens,        # Shape: (total_tokens_for_routing, hidden_dim)
+            token_indices_for_scatter, # Shape: (total_tokens_for_routing), indices to scatter final results
+            tokens_per_expert,    # Shape: (num_global_experts), count of tokens from local `x` for each global expert
         ) = self.sort_tokens(x, topk_ids, topk_weight)
 
-        # Keep the seqlen dimension for later use
-        seqlen_sorted_tokens = sorted_tokens.shape[0]
+        seqlen_sorted_tokens = sorted_tokens.shape[0] # Total tokens this rank is responsible for routing
 
-        print(f"Rank {dist.get_rank()}: sorted_tokens shape: {sorted_tokens.shape}")
-        print(f"Rank {dist.get_rank()}: token_send_buf shape: {self.token_send_buf.shape}")
-        torch.cuda.current_stream().synchronize()
-        # Exchange token count information (no gradient needed)
-        with torch.no_grad():
-            tokens_per_expert_group = tokens_per_expert.new_empty(
-                tokens_per_expert.shape[0]
-            )
-            dist.all_to_all_single(
-                tokens_per_expert_group, tokens_per_expert, group=self.ep_group
-            )
-            input_splits = tokens_per_expert.view(self.ep_size, -1).sum(dim=1)
-            output_splits = tokens_per_expert_group.view(self.ep_size, -1).sum(dim=1)
+        # print(f"Rank {dist.get_rank()}: sorted_tokens shape: {sorted_tokens.shape}") # For debugging
 
-        print(f"Rank {dist.get_rank()}: input_splits: {input_splits}")
-        print(f"Rank {dist.get_rank()}: output_splits: {output_splits}")
+        # --- Stage 1: Small All-to-All for expert counts (Synchronous, provides input for generate_permute_indices) ---
+        # expert_counts_received_layout_full_shape is `tokens_per_expert_group` from the original implementation.
+        # It describes the layout of tokens this rank will receive, often source-rank major then expert major.
+        expert_counts_received_layout_full_shape = tokens_per_expert.new_empty(tokens_per_expert.shape[0])
+        dist.all_to_all_single(expert_counts_received_layout_full_shape, tokens_per_expert, group=self.ep_group)
+        
+        # --- Stage 2: Launch Asynchronous Data All-to-All (A2A1) on MoE.copy_stream ---
+        token_gather_buf = self.get_gather_buf() # This is MoE.token_gather_buf
+        with torch.no_grad(): # input_splits_A2A1 is based on tokens_per_expert (what this rank sends)
+            input_splits_A2A1 = tokens_per_expert.view(self.ep_size, -1).sum(dim=1)
 
-        # Prepare symmetric memory buffers
-        token_send_buf = self.get_send_buf()
-        token_gather_buf = self.get_gather_buf()
+        # This will store the actual number of tokens this rank received from each source rank during A2A1.
+        # It's crucial for correctly sending data back in A2A2.
+        actual_recv_splits_A2A1_from_op = None 
 
-        # Copy sorted tokens to send buffer
-        token_send_buf[: token_indices.shape[0]].copy_(sorted_tokens)
-
-        # Get current stream for later synchronization
-        default_stream = torch.cuda.current_stream()
-
-        # Start async all-to-all communication on copy stream
-        # with torch.cuda.stream(MoE.copy_stream):
-        #     token_gather_buf, _ = OnDeviceAllToAllV.apply(
-        #         token_send_buf,
-        #         input_splits,
-        #         self.ep_group,
-        #     )
         with torch.cuda.stream(MoE.copy_stream):
-            token_gather_buf, _ = OnDeviceAllToAllV.apply(
-                token_send_buf,
-                input_splits,
-                self.ep_group,
+            # OnDeviceAllToAllV.apply will:
+            # 1. Copy `sorted_tokens` into `MoE.token_send_buf` (internal to OnDeviceAllToAllV).
+            # 2. Perform all_to_all_single from `MoE.token_send_buf` to `MoE.token_gather_buf`.
+            # 3. Return a view of `MoE.token_gather_buf` and the actual receive split sizes.
+            _, actual_recv_splits_A2A1_from_op = OnDeviceAllToAllV.apply(
+                sorted_tokens,          # Data this rank sends
+                input_splits_A2A1,      # How `sorted_tokens` is split for sending
+                self.ep_group
             )
-            # record “all transfers finished” on the copy stream
-            MoE._ready_event.record()
+            # `actual_recv_splits_A2A1_from_op` now holds the tensor with receive counts.
+            MoE._ready_event.record(MoE.copy_stream) # Signal completion of A2A1 data transfer
 
-        # While communication is in flight, prepare local tokens for computation
-        with torch.no_grad():
-            # Identify which tokens belong to local experts
-            local_expert_start = self.ep_rank * self.experts_per_rank
-            local_expert_end = (self.ep_rank + 1) * self.experts_per_rank
-            local_expert_mask = (tokens_per_expert[local_expert_start:local_expert_end] > 0)
-            
-            # Get local token ranges
-            local_tokens_count = tokens_per_expert[local_expert_start:local_expert_end].sum()
-            
-            # Compute permutation indices for token reordering  
-            permuted_indices, m_sizes, m_offsets = generate_permute_indices(
-                tokens_per_expert_group,
-                self.experts_per_rank,
-                self.ep_size,
-                token_gather_buf.shape[0],
-                ALIGN_SIZE_M,
-            )
+        # --- Stage 3: Overlapped Computation: Generate Permutation Indices (CPU bound, on default stream) ---
+        # This uses `expert_counts_received_layout_full_shape` from Stage 1 (A2A of counts).
+        # It does NOT depend on the actual data in `token_gather_buf` from A2A1 yet.
+        permuted_indices, m_sizes, m_offsets = generate_permute_indices(
+            expert_counts_received_layout_full_shape, # This is `tokens_per_expert_group`
+            self.experts_per_rank,
+            self.ep_size,
+            token_gather_buf.shape[0], # Full capacity of the gather buffer
+            ALIGN_SIZE_M,
+        )
 
-        # Start computing local experts on compute stream while transfers happen
+        # --- Stage 4: Group GEMM Computation (on MoE.comp_stream) ---
         with torch.cuda.stream(MoE.comp_stream):
-            # Extract local tokens that are already available (no transfer needed)
-            local_offset = output_splits[:self.ep_rank].sum()
-            local_count = output_splits[self.ep_rank]
-            local_token_indices = permuted_indices[local_offset:local_offset + local_count]
+            MoE.comp_stream.wait_event(MoE._ready_event) # Wait for A2A1 data in token_gather_buf
+
+            # Now token_gather_buf contains tokens from other ranks.
+            # permuted_indices reorder these tokens for expert-contiguity.
+            contig_tokens = token_gather_buf[permuted_indices]
             
-            # Get local tokens from gather buffer (these are the ones sent to us)
-            contig_local_tokens = token_gather_buf[local_token_indices]
-            
-            # Run group GEMM on local tokens
-            local_hidden_outputs = self._run_group_gemm(
-                contig_local_tokens,
+            hidden_outputs = self._run_group_gemm(
+                contig_tokens,
                 m_sizes,
                 m_offsets,
             )
 
-        # Synchronize copy stream to ensure all transfers are complete
-        # MoE.copy_stream.synchronize()
+            # Results from GEMM are in hidden_outputs. Scatter them back into token_gather_buf
+            # (which is aliased by processed_tokens_storage) using the same permuted_indices.
+            processed_tokens_storage = self.get_gather_buf() # Re-gets MoE.token_gather_buf
+            processed_tokens_storage[permuted_indices] = hidden_outputs
+            
+            MoE.comp_stream.record(MoE._ready_event) # Signal completion of GEMM and scatter
 
-        # Now process remote tokens that have arrived
-        # with torch.cuda.stream(MoE.comp_stream):
-        #     # wait until copy-stream has finished populating `token_gather_buf`
-        #     MoE.comp_stream.wait_event(MoE._ready_event)
-        #     # Get all tokens and run group GEMM
-        #     contig_tokens = token_gather_buf[permuted_indices]
-        #     hidden_outputs = self._run_group_gemm(
-        #         contig_tokens,
-        #         m_sizes,
-        #         m_offsets,
-        #     )
-
-        # # Ensure computation is complete before reshuffling
-        # MoE.comp_stream.synchronize()
-
-        # Prepare buffer for processed tokens
-        # processed_tokens = self.get_gather_buf()
-        # processed_tokens[permuted_indices] = local_hidden_outputs
-        with torch.cuda.stream(MoE.comp_stream):
-            MoE.comp_stream.wait_event(MoE._ready_event)        # fence ⛳
-            contig_tokens = token_gather_buf[permuted_indices]  # safe read
-            hidden_outputs = self._run_group_gemm(
-                contig_tokens, m_sizes, m_offsets
-            )
-
-        MoE.comp_stream.synchronize()   # ensure GEMMs are done
-
-        processed_tokens = self.get_gather_buf()
-        processed_tokens[permuted_indices] = hidden_outputs
-        # Shuffle tokens back to their original owners (EP to DP)
+        # --- Stage 5: Second All-to-All (A2A2 - EP to DP): Send processed results back (on MoE.copy_stream) ---
         with torch.cuda.stream(MoE.copy_stream):
-            token_return_buf, _ = OnDeviceAllToAllV.apply(
-                processed_tokens,
-                output_splits,
+            MoE.copy_stream.wait_event(MoE._ready_event) # Wait for GEMM results
+
+            # Data to send back is `processed_tokens_storage` (which is MoE.token_gather_buf after GEMM).
+            # Send splits are `actual_recv_splits_A2A1_from_op` (send tokens back based on how many were received from each source).
+            token_return_buf_view, _ = OnDeviceAllToAllV.apply(
+                processed_tokens_storage,
+                actual_recv_splits_A2A1_from_op, 
                 self.ep_group,
             )
+            MoE.copy_stream.record(MoE._ready_event) # Signal completion of A2A2
 
-        # Synchronize to ensure return communication is complete
-        # MoE.copy_stream.synchronize()
+        # --- Stage 6: Finalize Output (on default stream) ---
+        torch.cuda.current_stream().wait_event(MoE._ready_event) # Sync default stream with A2A2 completion
+        
+        # token_return_buf_view is a view of MoE.token_gather_buf, now containing the final returned tokens.
+        # Trim to the number of tokens this rank originally routed.
+        returned_tokens = token_return_buf_view[:seqlen_sorted_tokens]
 
-        # Restore original token order
-        returned_tokens = token_return_buf[:seqlen_sorted_tokens]
-        output_tokens = torch.empty_like(returned_tokens)
-        output_tokens[token_indices] = returned_tokens
+        # Scatter `returned_tokens` back to their original pre-sorted, pre-routing positions.
+        final_output_placeholder = torch.empty_like(sorted_tokens) # Same shape as input to A2A1
+        final_output_placeholder[token_indices_for_scatter] = returned_tokens
 
-        # Apply gating weights and combine expert outputs
+        # Apply expert weights and sum
         final_out = (
-            output_tokens.view(*topk_ids.shape, -1)
+            final_output_placeholder.view(*topk_ids.shape, -1) # Reshape for weighting
             .type(topk_weight.dtype)
-            .mul_(topk_weight.unsqueeze(dim=-1))
-            .sum(dim=1)
+            .mul_(topk_weight.unsqueeze(dim=-1)) # Apply weights
+            .sum(dim=1) # Sum over the experts dimension
             .type(returned_tokens.dtype)
         )
-
         return final_out
 
 class Attention(nn.Module):
