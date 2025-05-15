@@ -62,7 +62,7 @@ def run_full_model(
 
     # Apply data parallelism
     # fsdp_mesh = mesh["fsdp"]
-    hsdp_mesh = mesh["ep", "fsdp"]
+    hsdp_mesh = mesh["ep"]
     # print(f"{rank=}, fsdp_mesh: {fsdp_mesh}")
     print(f"{rank=}, hsdp_mesh: {hsdp_mesh}")
 
@@ -83,7 +83,8 @@ def run_full_model(
     #     fully_shard(layer, mesh=hsdp_mesh, reshard_after_forward=False)
 
     # Apply HSDP on root model (lm_head, embeddings, etc)
-    fully_shard(model, mesh=hsdp_mesh, reshard_after_forward=False)
+    # fully_shard(model, mesh=hsdp_mesh, reshard_after_forward=False)
+
 
     # Synthetic setting
     microbatches = pp_size * 2
@@ -130,7 +131,8 @@ def run_full_model(
                 pp_schedule.step()
         else:
             y = model(x)
-            loss = loss_fn(y, label)
+            # loss = loss_fn(y, label)
+            loss = loss_fn(y.reshape(-1, y.size(-1)), label.reshape(-1, label.size(-1)))
             loss.backward()
 
         if pp_rank == pp_size - 1:
