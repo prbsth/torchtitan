@@ -13,7 +13,7 @@ def benchmark_moe_implementations(args):
     mesh = dist.init_device_mesh("cuda", (1, args.num_gpus), mesh_dim_names=("pp", "ep"))
     
     rank = dist.get_rank()
-    device = torch.device("cuda", rank)
+    device = torch.device(f"cuda:{rank}")  # Ensure correct device
     
     # Model configuration
     model_id = "deepseek-ai/DeepSeek-V2-Lite"
@@ -40,18 +40,20 @@ def benchmark_moe_implementations(args):
     loss_fn = torch.nn.CrossEntropyLoss()
     
     # BENCHMARK 1: TRADITIONAL METHOD (without overlap)
-    with torch.cuda.device(device), mesh:
+    torch.cuda.set_device(device)  # Explicitly set device
+    with mesh:
         vanilla_model = DeepseekForCausalLM(model_args)
     
     vanilla_model.train()
     
+    # Make sure tensors are on the correct device
     x_vanilla = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
     labels_vanilla = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
     
     # Warmup
     for _ in range(3):
         output = vanilla_model(x_vanilla)
-        if output.dim() == 3:  # [batch, seq, vocab]
+        if output.dim() == 3:
             loss = loss_fn(output.reshape(-1, output.size(-1)), labels_vanilla.reshape(-1))
         else:
             loss = loss_fn(output, labels_vanilla)
@@ -79,18 +81,22 @@ def benchmark_moe_implementations(args):
     
     torch.cuda.synchronize()
     vanilla_time = (time.time() - start) / args.iterations * 1000
+    
+    # Clean up to avoid memory issues
     del vanilla_model
     torch.cuda.empty_cache()
-    dist.barrier()
+    dist.barrier()  # Make sure all ranks have completed
     
     # BENCHMARK 2: SYMMETRIC MEMORY WITH OVERLAP
-    with device, mesh:
+    torch.cuda.set_device(device)  # Explicitly set device again
+    with mesh:
         overlap_model = DeepseekForCausalLM(model_args)
     
-    # Enable symmetric memory for both implementations
+    # Enable symmetric memory
     overlap_model.setup_symm_mem(torch.bfloat16, device)
     overlap_model.train()
     
+    # Make sure tensors are on the correct device
     x_overlap = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
     labels_overlap = torch.randint(0, model_args.vocab_size, (batch_size, seq_len), device=device)
     
@@ -125,7 +131,6 @@ def benchmark_moe_implementations(args):
     
     torch.cuda.synchronize()
     overlap_time = (time.time() - start) / args.iterations * 1000
-    dist.destroy_process_group()
     
     # Report results
     tokens_per_batch = batch_size * seq_len
@@ -149,4 +154,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     benchmark_moe_implementations(args)
-    dist.destroy_process_group()
