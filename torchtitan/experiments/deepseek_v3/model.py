@@ -570,11 +570,19 @@ class MoE(nn.Module):
 
     def combine_experts(self, submod_name: str):
         all_weights = []
-        for expert in self.experts.values():
-
-            lin = expert.get_submodule(submod_name)
+        for expert_key, expert_module in self.experts.items():
+            # ---- START MINIMAL DEBUG ----
+            if not hasattr(expert_module, submod_name):
+                print(f"Rank {dist.get_rank() if dist.is_initialized() else -1}: MoE.combine_experts DEBUG: expert '{expert_key}' does NOT have submodule '{submod_name}'", flush=True)
+                # This would be a different error, but good to check
+                all_weights.append(None) # To reproduce the error if this path is taken
+                continue
+            # ---- END MINIMAL DEBUG ----
+            lin = expert_module.get_submodule(submod_name)
+            if lin.weight is None:
+                print(f"Rank {dist.get_rank() if dist.is_initialized() else -1}: MoE.combine_experts DEBUG: For submod '{submod_name}', expert '{expert_key}', lin.weight IS None when trying to append.", flush=True)
             all_weights.append(lin.weight)
-            lin.weight = None
+            # Defer setting lin.weight = None until after combined_weight is registered
 
         # let the group gemm strategy prep the final weight layout
         combined_weight = self.group_gemm_instance.arrange_expert_weights(
@@ -585,6 +593,18 @@ class MoE(nn.Module):
             raise NotImplementedError("expert weights not handled by group gemmm")
 
         self.register_parameter(f"{submod_name}_weight", nn.Parameter(combined_weight))
+
+        # Now that the combined_weight is registered, nil out the original weights
+        # This was the original position for nilling them out.
+        for expert_module in self.experts.values():
+            # ---- START MINIMAL DEBUG ----
+            # Need to re-check hasattr as the submodule might have been skipped above
+            if not hasattr(expert_module, submod_name):
+                continue
+            # ---- END MINIMAL DEBUG ----
+            lin = expert_module.get_submodule(submod_name)
+            if hasattr(lin, 'weight'): # Check if it even has a weight attr anymore
+                lin.weight = None
 
     # This function is used to create a symm mem buffer for MoE's. It is for
     # shuffling tokens fully "on-device", as compared to traditional torch
