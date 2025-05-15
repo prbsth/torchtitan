@@ -477,6 +477,10 @@ class MoE(nn.Module):
         "torch"  # fp8 options = ["torchfp8", "dsgemm"] bf16 = ["torch", , "torchao"]
     )
 
+    # PURAB-CHANGE: different streams for copy and compute
+    copy_stream: Optional[torch.cuda.Stream] = None
+    comp_stream: Optional[torch.cuda.Stream] = None
+
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -523,6 +527,11 @@ class MoE(nn.Module):
         # keep active gg ready
         self.group_gemm_instance = MoE.group_gemm_strategies[MoE.group_mm]
         self._buffer_initialized = False
+        if MoE.copy_stream is None:
+            MoE.copy_stream = torch.cuda.Stream()
+        if MoE.comp_stream is None:
+            MoE.comp_stream = torch.cuda.Stream()
+        
 
     @classmethod
     def _initialize_group_gemm_strategies(cls):
@@ -632,6 +641,10 @@ class MoE(nn.Module):
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         if self.shuffle_method == "symm_mem":
             y = self.moe_on_device(hidden_states, topk_idx, topk_weight)
+            if MoE.copy_stream is not None:
+                MoE.copy_stream.synchronize()
+            if MoE.comp_stream is not None:
+                MoE.comp_stream.synchronize()
         else:  # "torch_all_to_all"
             y = self.moe_forward(hidden_states, topk_idx, topk_weight)
 
@@ -789,6 +802,92 @@ class MoE(nn.Module):
             # Flag the error
             print(f"Error using {self.group_mm} strategy: {e}")
 
+    # def moe_on_device(self, x, topk_ids, topk_weight):
+    #     (
+    #         sorted_tokens,
+    #         token_indices,
+    #         tokens_per_expert,
+    #     ) = self.sort_tokens(x, topk_ids, topk_weight)
+
+    #     # keep the seqlen dimension for later use without holding onto the sorted tokens
+    #     seqlen_sorted_tokens = sorted_tokens.shape[0]
+
+    #     # This part exchange the information about the number of tokens send and
+    #     # received by each expert. We can understand this information as "side
+    #     # band", which is not part of the actual data. Thus no gradient is
+    #     # needed.
+
+    #     # Sum the tokens over local experts, then we get tokens per EP rank,
+    #     # which is the input splits
+    #     with torch.no_grad():
+    #         tokens_per_expert_group = tokens_per_expert.new_empty(
+    #             tokens_per_expert.shape[0]
+    #         )
+    #         dist.all_to_all_single(
+    #             tokens_per_expert_group, tokens_per_expert, group=self.ep_group
+    #         )
+    #         input_splits = tokens_per_expert.view(self.ep_size, -1).sum(dim=1)
+
+    #     # Move input to the `token_send_buf` symm mem
+    #     token_send_buf = self.get_send_buf()
+    #     token_send_buf[: token_indices.shape[0]].copy_(sorted_tokens)
+    #     # Note: `out=` avoids copy, but it is not differentiable
+    #     # torch.index_select(x, 0, idxs // topk_ids.shape[1], out=token_send_buf[: idxs.shape[0]])
+    #     token_gather_buf, output_splits = OnDeviceAllToAllV.apply(
+    #         token_send_buf,
+    #         input_splits,
+    #         self.ep_group,
+    #     )
+
+    #     # We need to permute the received tokens so that tokens for the same expert are contiguous.
+    #     # This part prepares a 1D tensor `permuted_indices` for such permutation.
+    #     # This part doesn't need gradient.
+    #     with torch.no_grad():
+    #         permuted_indices, m_sizes, m_offsets = generate_permute_indices(
+    #             tokens_per_expert_group,
+    #             self.experts_per_rank,
+    #             self.ep_size,
+    #             token_gather_buf.shape[0],
+    #             ALIGN_SIZE_M,
+    #         )
+
+    #     # Permute the received tokens so that tokens for the same expert are contiguous.
+    #     contig_tokens = token_gather_buf[permuted_indices]
+
+    #     # group gemm - handle all three group gemms (up, gate, down for all experts)
+    #     hidden_outputs = self._run_group_gemm(
+    #         contig_tokens,
+    #         m_sizes,
+    #         m_offsets,
+    #     )
+
+    #     # Prepare buffer for tokens processed by experts
+    #     processed_tokens = self.get_gather_buf()
+
+    #     # Move into Symmetric Memory for the return shuffle
+    #     processed_tokens[permuted_indices] = hidden_outputs
+
+    #     # Now shuffle the tokens back to their original owner, i.e. EP to DP shuffle.
+    #     # The input/output splits are just a reverse of the previous shuffle.
+    #     token_return_buf, _ = OnDeviceAllToAllV.apply(
+    #         processed_tokens,
+    #         output_splits,
+    #         self.ep_group,
+    #     )
+
+    #     returned_tokens = token_return_buf[:seqlen_sorted_tokens]
+    #     output_tokens = torch.empty_like(returned_tokens)
+    #     output_tokens[token_indices] = returned_tokens
+
+    #     final_out = (
+    #         output_tokens.view(*topk_ids.shape, -1)
+    #         .type(topk_weight.dtype)
+    #         .mul_(topk_weight.unsqueeze(dim=-1))
+    #         .sum(dim=1)
+    #         .type(returned_tokens.dtype)
+    #     )
+
+    #     return final_out
     def moe_on_device(self, x, topk_ids, topk_weight):
         (
             sorted_tokens,
@@ -796,16 +895,10 @@ class MoE(nn.Module):
             tokens_per_expert,
         ) = self.sort_tokens(x, topk_ids, topk_weight)
 
-        # keep the seqlen dimension for later use without holding onto the sorted tokens
+        # Keep the seqlen dimension for later use
         seqlen_sorted_tokens = sorted_tokens.shape[0]
 
-        # This part exchange the information about the number of tokens send and
-        # received by each expert. We can understand this information as "side
-        # band", which is not part of the actual data. Thus no gradient is
-        # needed.
-
-        # Sum the tokens over local experts, then we get tokens per EP rank,
-        # which is the input splits
+        # Exchange token count information (no gradient needed)
         with torch.no_grad():
             tokens_per_expert_group = tokens_per_expert.new_empty(
                 tokens_per_expert.shape[0]
@@ -814,22 +907,37 @@ class MoE(nn.Module):
                 tokens_per_expert_group, tokens_per_expert, group=self.ep_group
             )
             input_splits = tokens_per_expert.view(self.ep_size, -1).sum(dim=1)
+            output_splits = tokens_per_expert_group.view(self.ep_size, -1).sum(dim=1)
 
-        # Move input to the `token_send_buf` symm mem
+        # Prepare symmetric memory buffers
         token_send_buf = self.get_send_buf()
-        token_send_buf[: token_indices.shape[0]].copy_(sorted_tokens)
-        # Note: `out=` avoids copy, but it is not differentiable
-        # torch.index_select(x, 0, idxs // topk_ids.shape[1], out=token_send_buf[: idxs.shape[0]])
-        token_gather_buf, output_splits = OnDeviceAllToAllV.apply(
-            token_send_buf,
-            input_splits,
-            self.ep_group,
-        )
+        token_gather_buf = self.get_gather_buf()
 
-        # We need to permute the received tokens so that tokens for the same expert are contiguous.
-        # This part prepares a 1D tensor `permuted_indices` for such permutation.
-        # This part doesn't need gradient.
+        # Copy sorted tokens to send buffer
+        token_send_buf[: token_indices.shape[0]].copy_(sorted_tokens)
+
+        # Get current stream for later synchronization
+        default_stream = torch.cuda.current_stream()
+
+        # Start async all-to-all communication on copy stream
+        with torch.cuda.stream(MoE.copy_stream):
+            token_gather_buf, _ = OnDeviceAllToAllV.apply(
+                token_send_buf,
+                input_splits,
+                self.ep_group,
+            )
+
+        # While communication is in flight, prepare local tokens for computation
         with torch.no_grad():
+            # Identify which tokens belong to local experts
+            local_expert_start = self.ep_rank * self.experts_per_rank
+            local_expert_end = (self.ep_rank + 1) * self.experts_per_rank
+            local_expert_mask = (tokens_per_expert[local_expert_start:local_expert_end] > 0)
+            
+            # Get local token ranges
+            local_tokens_count = tokens_per_expert[local_expert_start:local_expert_end].sum()
+            
+            # Compute permutation indices for token reordering  
             permuted_indices, m_sizes, m_offsets = generate_permute_indices(
                 tokens_per_expert_group,
                 self.experts_per_rank,
@@ -838,34 +946,60 @@ class MoE(nn.Module):
                 ALIGN_SIZE_M,
             )
 
-        # Permute the received tokens so that tokens for the same expert are contiguous.
-        contig_tokens = token_gather_buf[permuted_indices]
+        # Start computing local experts on compute stream while transfers happen
+        with torch.cuda.stream(MoE.comp_stream):
+            # Extract local tokens that are already available (no transfer needed)
+            local_offset = output_splits[:self.ep_rank].sum()
+            local_count = output_splits[self.ep_rank]
+            local_token_indices = permuted_indices[local_offset:local_offset + local_count]
+            
+            # Get local tokens from gather buffer (these are the ones sent to us)
+            contig_local_tokens = token_gather_buf[local_token_indices]
+            
+            # Run group GEMM on local tokens
+            local_hidden_outputs = self._run_group_gemm(
+                contig_local_tokens,
+                m_sizes,
+                m_offsets,
+            )
 
-        # group gemm - handle all three group gemms (up, gate, down for all experts)
-        hidden_outputs = self._run_group_gemm(
-            contig_tokens,
-            m_sizes,
-            m_offsets,
-        )
+        # Synchronize copy stream to ensure all transfers are complete
+        MoE.copy_stream.synchronize()
 
-        # Prepare buffer for tokens processed by experts
+        # Now process remote tokens that have arrived
+        with torch.cuda.stream(MoE.comp_stream):
+            # Get all tokens and run group GEMM
+            contig_tokens = token_gather_buf[permuted_indices]
+            hidden_outputs = self._run_group_gemm(
+                contig_tokens,
+                m_sizes,
+                m_offsets,
+            )
+
+        # Ensure computation is complete before reshuffling
+        MoE.comp_stream.synchronize()
+
+        # Prepare buffer for processed tokens
         processed_tokens = self.get_gather_buf()
-
-        # Move into Symmetric Memory for the return shuffle
         processed_tokens[permuted_indices] = hidden_outputs
 
-        # Now shuffle the tokens back to their original owner, i.e. EP to DP shuffle.
-        # The input/output splits are just a reverse of the previous shuffle.
-        token_return_buf, _ = OnDeviceAllToAllV.apply(
-            processed_tokens,
-            output_splits,
-            self.ep_group,
-        )
+        # Shuffle tokens back to their original owners (EP to DP)
+        with torch.cuda.stream(MoE.copy_stream):
+            token_return_buf, _ = OnDeviceAllToAllV.apply(
+                processed_tokens,
+                output_splits,
+                self.ep_group,
+            )
 
+        # Synchronize to ensure return communication is complete
+        MoE.copy_stream.synchronize()
+
+        # Restore original token order
         returned_tokens = token_return_buf[:seqlen_sorted_tokens]
         output_tokens = torch.empty_like(returned_tokens)
         output_tokens[token_indices] = returned_tokens
 
+        # Apply gating weights and combine expert outputs
         final_out = (
             output_tokens.view(*topk_ids.shape, -1)
             .type(topk_weight.dtype)
@@ -875,7 +1009,6 @@ class MoE(nn.Module):
         )
 
         return final_out
-
 
 class Attention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
