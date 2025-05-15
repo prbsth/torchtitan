@@ -65,6 +65,10 @@ def run_full_model(
     hsdp_mesh = mesh["ep", "fsdp"]
     print(f"{rank=}, fsdp_mesh: {fsdp_mesh}")
     print(f"{rank=}, hsdp_mesh: {hsdp_mesh}")
+
+
+    # PURAB-CHANGE: FIRST SYM MEM
+    model.setup_symm_mem(torch.bfloat16, device)
     # Using `reshard_after_forward=False` to implement Zero-2, i.e. sharding the
     # optimizer (Zero-1) and gradients (Zero-2), but not the model weights.
     # Reason: the MoE is "sparsely activated" compared to the dense model, thus
@@ -87,7 +91,7 @@ def run_full_model(
     # Use Symmetric Memory for MoE token shuffle.
     # TODO: we are rewriting `moe_on_device` function. `setup_symm_mem` is
     # currently supported for forward only. See `generate.py`.
-    model.setup_symm_mem(torch.bfloat16, device)
+    # model.setup_symm_mem(torch.bfloat16, device)
 
     # Example inputs
     print(f"**** {rank=}, {ep_rank=}")
