@@ -27,40 +27,93 @@ def run_benchmark(num_gpus, experts_per_gpu, num_layers, batch_size, seq_len, it
     print(f"Command: {' '.join(cmd)}")
     print(f"{'='*80}\n")
     
-    # Run the command and capture output
-    process = subprocess.Popen(
-        cmd, 
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        universal_newlines=True
-    )
+    # Run the command and capture all output
+    result = subprocess.run(cmd, capture_output=True, text=True)
     
-    # Print output in real-time
-    results = {"seq_len": seq_len}
-    for line in process.stdout:
-        print(line, end='')
-        # Parse the results
-        if "Vanilla (no overlap):" in line:
-            results["vanilla_time"] = float(line.split(":")[1].strip().split()[0])
-        elif "Comet (with overlap):" in line:
-            results["overlap_time"] = float(line.split(":")[1].strip().split()[0])
-        elif "Speedup:" in line:
-            results["speedup"] = float(line.split(":")[1].strip().split("x")[0])
-        elif "Improvement:" in line:
-            results["improvement"] = float(line.split(":")[1].strip().split("%")[0])
-        elif "Tokens/sec vanilla:" in line:
-            results["vanilla_tokens_per_sec"] = float(line.split(":")[1].strip())
-        elif "Tokens/sec Comet:" in line:
-            results["overlap_tokens_per_sec"] = float(line.split(":")[1].strip())
-    
-    # Check for errors
-    stderr_output, _ = process.communicate()
-    if stderr_output:
+    # Print output
+    print(result.stdout)
+    if result.stderr:
         print("STDERR:")
-        print(stderr_output)
+        print(result.stderr)
     
-    if "vanilla_time" not in results or "overlap_time" not in results:
+    # Write raw output to a file for debugging
+    with open(f"benchmark_output_seq_{seq_len}.txt", "w") as f:
+        f.write(result.stdout)
+        if result.stderr:
+            f.write("\nSTDERR:\n")
+            f.write(result.stderr)
+    
+    # Parse results - look in the whole output
+    results = {"seq_len": seq_len}
+    output = result.stdout
+    
+    # Try to find the result lines
+    vanilla_line = [line for line in output.split('\n') if "Vanilla (no overlap):" in line]
+    if vanilla_line:
+        try:
+            results["vanilla_time"] = float(vanilla_line[0].split(":")[1].strip().split()[0])
+        except (IndexError, ValueError) as e:
+            print(f"Error parsing vanilla time: {e}")
+    
+    overlap_line = [line for line in output.split('\n') if "Comet (with overlap):" in line]
+    if overlap_line:
+        try:
+            results["overlap_time"] = float(overlap_line[0].split(":")[1].strip().split()[0])
+        except (IndexError, ValueError) as e:
+            print(f"Error parsing overlap time: {e}")
+    
+    speedup_line = [line for line in output.split('\n') if "Speedup:" in line]
+    if speedup_line:
+        try:
+            results["speedup"] = float(speedup_line[0].split(":")[1].strip().split("x")[0])
+        except (IndexError, ValueError) as e:
+            print(f"Error parsing speedup: {e}")
+    
+    improvement_line = [line for line in output.split('\n') if "Improvement:" in line]
+    if improvement_line:
+        try:
+            results["improvement"] = float(improvement_line[0].split(":")[1].strip().split("%")[0])
+        except (IndexError, ValueError) as e:
+            print(f"Error parsing improvement: {e}")
+    
+    vanilla_tokens_line = [line for line in output.split('\n') if "Tokens/sec vanilla:" in line]
+    if vanilla_tokens_line:
+        try:
+            results["vanilla_tokens_per_sec"] = float(vanilla_tokens_line[0].split(":")[1].strip())
+        except (IndexError, ValueError) as e:
+            print(f"Error parsing vanilla tokens/sec: {e}")
+    
+    overlap_tokens_line = [line for line in output.split('\n') if "Tokens/sec Comet:" in line]
+    if overlap_tokens_line:
+        try:
+            results["overlap_tokens_per_sec"] = float(overlap_tokens_line[0].split(":")[1].strip())
+        except (IndexError, ValueError) as e:
+            print(f"Error parsing overlap tokens/sec: {e}")
+    
+    if not all(k in results for k in ["vanilla_time", "overlap_time"]):
+        # If we can't find the results, we need to make sure our benchmark script is correctly printing them
         print(f"WARNING: Could not parse complete results for seq_len={seq_len}")
+        print("Please check if the benchmark script is printing the results in the expected format:")
+        print("  - 'Vanilla (no overlap): X.XX ms/iter'")
+        print("  - 'Comet (with overlap): X.XX ms/iter'")
+        print("  - 'Speedup: X.XXx'")
+        print("  - 'Improvement: XX.X%'")
+        print("  - 'Tokens/sec vanilla: XXXX'")
+        print("  - 'Tokens/sec Comet: XXXX'")
+        
+        # Use placeholder values to avoid breaking the plotting
+        if "vanilla_time" not in results:
+            results["vanilla_time"] = 0
+        if "overlap_time" not in results:
+            results["overlap_time"] = 0
+        if "speedup" not in results:
+            results["speedup"] = 1.0
+        if "improvement" not in results:
+            results["improvement"] = 0.0
+        if "vanilla_tokens_per_sec" not in results:
+            results["vanilla_tokens_per_sec"] = 0
+        if "overlap_tokens_per_sec" not in results:
+            results["overlap_tokens_per_sec"] = 0
     
     return results
 
@@ -139,9 +192,11 @@ def create_plots(results, output_dir):
     
     # Add values on top of the bars
     for i, v in enumerate(vanilla_throughput):
-        plt.text(i - bar_width/2, v + max(vanilla_throughput)*0.02, f"{int(v)}", ha='center')
+        if v > 0:
+            plt.text(i - bar_width/2, v + max(filter(lambda x: x > 0, vanilla_throughput))*0.02, f"{int(v)}", ha='center')
     for i, v in enumerate(overlap_throughput):
-        plt.text(i + bar_width/2, v + max(overlap_throughput)*0.02, f"{int(v)}", ha='center')
+        if v > 0:
+            plt.text(i + bar_width/2, v + max(filter(lambda x: x > 0, overlap_throughput))*0.02, f"{int(v)}", ha='center')
     
     plt.savefig(f"{output_dir}/throughput_comparison.png", dpi=300, bbox_inches='tight')
     print(f"Saved throughput plot to {output_dir}/throughput_comparison.png")

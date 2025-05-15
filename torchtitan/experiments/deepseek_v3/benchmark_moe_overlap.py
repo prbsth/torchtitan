@@ -132,7 +132,10 @@ def benchmark_moe_implementations(args):
     torch.cuda.synchronize()
     overlap_time = (time.time() - start) / args.iterations * 1000
     
-    # Report results
+    # Make sure all processes report results
+    dist.barrier()
+    
+    # Report results from rank 0 only
     tokens_per_batch = batch_size * seq_len
     if rank == 0:
         print(f"\n=== Performance Results ===")
