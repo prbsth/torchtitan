@@ -481,7 +481,7 @@ class MoE(nn.Module):
     copy_stream: Optional[torch.cuda.Stream] = None
     comp_stream: Optional[torch.cuda.Stream] = None
     _ready_event: Optional[torch.cuda.Event] = None
-    _combined_submods: Optional[set] = None
+    _combined_submods: Optional[set] = set()
     def __init__(self, config):
         super().__init__()
         self.config = config
