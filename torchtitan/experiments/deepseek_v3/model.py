@@ -510,6 +510,15 @@ class MoE(nn.Module):
             self.experts[str(abs_expert_id)] = MLP(
                 config, intermediate_size=config.moe_intermediate_size
             )
+            # ---- START MINIMAL DEBUG ----
+            # Check the gate_proj.weight immediately after MLP creation for the first expert
+            if i == 0: # Only print for one expert to reduce log spam
+                expert_to_check = self.experts[str(abs_expert_id)]
+                if expert_to_check.gate_proj.weight is None:
+                    print(f"Rank {dist.get_rank() if dist.is_initialized() else -1}: MoE.__init__ DEBUG: expert {abs_expert_id}, gate_proj.weight IS NONE right after creation.", flush=True)
+                else:
+                    print(f"Rank {dist.get_rank() if dist.is_initialized() else -1}: MoE.__init__ DEBUG: expert {abs_expert_id}, gate_proj.weight is a Tensor right after creation. Type: {type(expert_to_check.gate_proj.weight)}", flush=True)
+            # ---- END MINIMAL DEBUG ----
         self.gate = MoEGate(config)
         if config.n_shared_experts is not None:
             intermediate_size = config.moe_intermediate_size * config.n_shared_experts
