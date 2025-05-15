@@ -1105,8 +1105,13 @@ class MoE(nn.Module):
         try:
             with torch.cuda.stream(MoE.copy_stream):
                 # Assuming OnDeviceAllToAllV.apply returns (output_tensor_view, output_splits)
+                token_send_buf = self.get_send_buf()
+                if sorted_tokens.shape[0] > token_send_buf.shape[0]:
+                    print(f"ERROR: Buffer overflow! Need {sorted_tokens.shape[0]} but buffer is {token_send_buf.shape[0]}")
+                    raise RuntimeError("Buffer too small")
+                token_send_buf[: sorted_tokens.shape[0]].copy_(sorted_tokens)
                 output_tensor_view_A2A1, actual_recv_splits_A2A1_from_op = OnDeviceAllToAllV.apply(
-                    sorted_tokens,
+                    token_send_buf,
                     input_splits_A2A1,
                     self.ep_group
                 )
