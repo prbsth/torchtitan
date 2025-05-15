@@ -40,7 +40,7 @@ def benchmark_moe_implementations(args):
     loss_fn = torch.nn.CrossEntropyLoss()
     
     # BENCHMARK 1: TRADITIONAL METHOD (without overlap)
-    with device, mesh:
+    with torch.cuda.device(device), mesh:
         vanilla_model = DeepseekForCausalLM(model_args)
     
     vanilla_model.train()
@@ -79,6 +79,9 @@ def benchmark_moe_implementations(args):
     
     torch.cuda.synchronize()
     vanilla_time = (time.time() - start) / args.iterations * 1000
+    del vanilla_model
+    torch.cuda.empty_cache()
+    dist.barrier()
     
     # BENCHMARK 2: SYMMETRIC MEMORY WITH OVERLAP
     with device, mesh:
@@ -122,6 +125,7 @@ def benchmark_moe_implementations(args):
     
     torch.cuda.synchronize()
     overlap_time = (time.time() - start) / args.iterations * 1000
+    dist.destroy_process_group()
     
     # Report results
     tokens_per_batch = batch_size * seq_len
