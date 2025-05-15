@@ -1,0 +1,38 @@
+[
+  {
+    "seq_len": 32,
+    "vanilla_time": 0,
+    "overlap_time": 0,
+    "speedup": 1.0,
+    "improvement": 0.0,
+    "vanilla_tokens_per_sec": 0,
+    "overlap_tokens_per_sec": 0
+  },
+  {
+    "seq_len": 64,
+    "vanilla_time": 0,
+    "overlap_time": 0,
+    "speedup": 1.0,
+    "improvement": 0.0,
+    "vanilla_tokens_per_sec": 0,
+    "overlap_tokens_per_sec": 0
+  },
+  {
+    "seq_len": 128,
+    "vanilla_time": 0,
+    "overlap_time": 0,
+    "speedup": 1.0,
+    "improvement": 0.0,
+    "vanilla_tokens_per_sec": 0,
+    "overlap_tokens_per_sec": 0
+  },
+  {
+    "seq_len": 256,
+    "vanilla_time": 0,
+    "overlap_time": 0,
+    "speedup": 1.0,
+    "improvement": 0.0,
+    "vanilla_tokens_per_sec": 0,
+    "overlap_tokens_per_sec": 0
+  }
+]

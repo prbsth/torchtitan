@@ -1,0 +1,163 @@
+Benchmarking MOE with:
+  - 16 total experts across 4 GPUs
+  - 2 layers
+  - Batch size: 4, Sequence length: 32
+  - Mode: Traditional (no overlap)
+Creating model stage 0 of 1
+Creating model stage 0 of 1
+Creating model stage 0 of 1
+Creating model stage 0 of 1
+Rank 0: MoE.__init__ DEBUG: expert 0, gate_proj.weight is a Tensor right after creation. Type: <class 'torch.nn.parameter.Parameter'>
+Rank 2: MoE.__init__ DEBUG: expert 8, gate_proj.weight is a Tensor right after creation. Type: <class 'torch.nn.parameter.Parameter'>
+Rank 1: MoE.__init__ DEBUG: expert 4, gate_proj.weight is a Tensor right after creation. Type: <class 'torch.nn.parameter.Parameter'>
+Rank 3: MoE.__init__ DEBUG: expert 12, gate_proj.weight is a Tensor right after creation. Type: <class 'torch.nn.parameter.Parameter'>
+
+STDERR:
+[W515 16:31:38.688173412 socket.cpp:755] [c10d] The client socket cannot be initialized to connect to [localhost]:44513 (errno: 97 - Address family not supported by protocol).
+[W515 16:31:38.690096507 socket.cpp:755] [c10d] The client socket cannot be initialized to connect to [localhost]:44513 (errno: 97 - Address family not supported by protocol).
+[W515 16:31:38.756234028 socket.cpp:755] [c10d] The client socket cannot be initialized to connect to [holygpu8a16304.rc.fas.harvard.edu]:39353 (errno: 97 - Address family not supported by protocol).
+[W515 16:32:04.463750604 socket.cpp:755] [c10d] The client socket cannot be initialized to connect to [holygpu8a16304.rc.fas.harvard.edu]:39353 (errno: 97 - Address family not supported by protocol).
+[W515 16:32:04.467881675 socket.cpp:755] [c10d] The client socket cannot be initialized to connect to [holygpu8a16304.rc.fas.harvard.edu]:39353 (errno: 97 - Address family not supported by protocol).
+[W515 16:32:04.481897413 socket.cpp:755] [c10d] The client socket cannot be initialized to connect to [holygpu8a16304.rc.fas.harvard.edu]:39353 (errno: 97 - Address family not supported by protocol).
+[W515 16:32:04.483323950 socket.cpp:755] [c10d] The client socket cannot be initialized to connect to [holygpu8a16304.rc.fas.harvard.edu]:39353 (errno: 97 - Address family not supported by protocol).
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/benchmark_moe_overlap.py", line 125, in <module>
+[rank0]:     benchmark_moe_implementations(args)
+[rank0]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/benchmark_moe_overlap.py", line 62, in benchmark_moe_implementations
+[rank0]:     output = model(x)
+[rank0]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/model.py", line 1591, in forward
+[rank0]:     hidden_states = self.model(
+[rank0]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/model.py", line 1538, in forward
+[rank0]:     self.embed_tokens(tokens) if self.embed_tokens is not None else tokens
+[rank0]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/sparse.py", line 190, in forward
+[rank0]:     return F.embedding(
+[rank0]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/functional.py", line 2551, in embedding
+[rank0]:     return torch.embedding(weight, input, padding_idx, scale_grad_by_freq, sparse)
+[rank0]: RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cpu and cuda:0! (when checking argument for argument index in method wrapper_CUDA__index_select)
+[rank3]: Traceback (most recent call last):
+[rank3]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/benchmark_moe_overlap.py", line 125, in <module>
+[rank3]:     benchmark_moe_implementations(args)
+[rank3]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/benchmark_moe_overlap.py", line 62, in benchmark_moe_implementations
+[rank3]:     output = model(x)
+[rank3]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+[rank3]:     return self._call_impl(*args, **kwargs)
+[rank3]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+[rank3]:     return forward_call(*args, **kwargs)
+[rank3]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/model.py", line 1591, in forward
+[rank3]:     hidden_states = self.model(
+[rank3]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+[rank3]:     return self._call_impl(*args, **kwargs)
+[rank3]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+[rank3]:     return forward_call(*args, **kwargs)
+[rank3]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/model.py", line 1538, in forward
+[rank3]:     self.embed_tokens(tokens) if self.embed_tokens is not None else tokens
+[rank3]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+[rank3]:     return self._call_impl(*args, **kwargs)
+[rank3]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+[rank3]:     return forward_call(*args, **kwargs)
+[rank3]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/sparse.py", line 190, in forward
+[rank3]:     return F.embedding(
+[rank3]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/functional.py", line 2551, in embedding
+[rank3]:     return torch.embedding(weight, input, padding_idx, scale_grad_by_freq, sparse)
+[rank3]: RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cpu and cuda:3! (when checking argument for argument index in method wrapper_CUDA__index_select)
+[rank2]: Traceback (most recent call last):
+[rank2]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/benchmark_moe_overlap.py", line 125, in <module>
+[rank2]:     benchmark_moe_implementations(args)
+[rank2]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/benchmark_moe_overlap.py", line 62, in benchmark_moe_implementations
+[rank2]:     output = model(x)
+[rank2]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+[rank2]:     return self._call_impl(*args, **kwargs)
+[rank2]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+[rank2]:     return forward_call(*args, **kwargs)
+[rank2]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/model.py", line 1591, in forward
+[rank2]:     hidden_states = self.model(
+[rank2]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+[rank2]:     return self._call_impl(*args, **kwargs)
+[rank2]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+[rank2]:     return forward_call(*args, **kwargs)
+[rank2]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/model.py", line 1538, in forward
+[rank2]:     self.embed_tokens(tokens) if self.embed_tokens is not None else tokens
+[rank2]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+[rank2]:     return self._call_impl(*args, **kwargs)
+[rank2]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+[rank2]:     return forward_call(*args, **kwargs)
+[rank2]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/sparse.py", line 190, in forward
+[rank2]:     return F.embedding(
+[rank2]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/functional.py", line 2551, in embedding
+[rank2]:     return torch.embedding(weight, input, padding_idx, scale_grad_by_freq, sparse)
+[rank2]: RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cpu and cuda:2! (when checking argument for argument index in method wrapper_CUDA__index_select)
+[rank1]: Traceback (most recent call last):
+[rank1]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/benchmark_moe_overlap.py", line 125, in <module>
+[rank1]:     benchmark_moe_implementations(args)
+[rank1]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/benchmark_moe_overlap.py", line 62, in benchmark_moe_implementations
+[rank1]:     output = model(x)
+[rank1]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+[rank1]:     return self._call_impl(*args, **kwargs)
+[rank1]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+[rank1]:     return forward_call(*args, **kwargs)
+[rank1]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/model.py", line 1591, in forward
+[rank1]:     hidden_states = self.model(
+[rank1]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+[rank1]:     return self._call_impl(*args, **kwargs)
+[rank1]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+[rank1]:     return forward_call(*args, **kwargs)
+[rank1]:   File "/n/netscratch/idreos_lab/Lab/pseth/dv2/torchtitan/torchtitan/experiments/deepseek_v3/model.py", line 1538, in forward
+[rank1]:     self.embed_tokens(tokens) if self.embed_tokens is not None else tokens
+[rank1]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+[rank1]:     return self._call_impl(*args, **kwargs)
+[rank1]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+[rank1]:     return forward_call(*args, **kwargs)
+[rank1]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/modules/sparse.py", line 190, in forward
+[rank1]:     return F.embedding(
+[rank1]:   File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/nn/functional.py", line 2551, in embedding
+[rank1]:     return torch.embedding(weight, input, padding_idx, scale_grad_by_freq, sparse)
+[rank1]: RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cpu and cuda:1! (when checking argument for argument index in method wrapper_CUDA__index_select)
+[rank3]:[W515 16:32:16.291541357 ProcessGroupNCCL.cpp:1476] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+[rank2]:[W515 16:32:16.405862749 ProcessGroupNCCL.cpp:1476] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+[rank0]:[W515 16:32:16.521812268 ProcessGroupNCCL.cpp:1476] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+[rank1]:[W515 16:32:16.592060390 ProcessGroupNCCL.cpp:1476] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+W0515 16:32:17.029000 3370098 site-packages/torch/distributed/elastic/multiprocessing/api.py:900] Sending process 3370108 closing signal SIGTERM
+W0515 16:32:17.030000 3370098 site-packages/torch/distributed/elastic/multiprocessing/api.py:900] Sending process 3370109 closing signal SIGTERM
+W0515 16:32:17.030000 3370098 site-packages/torch/distributed/elastic/multiprocessing/api.py:900] Sending process 3370110 closing signal SIGTERM
+E0515 16:32:17.458000 3370098 site-packages/torch/distributed/elastic/multiprocessing/api.py:874] failed (exitcode: 1) local_rank: 3 (pid: 3370111) of binary: /n/home06/pseth/.conda/envs/dv2/bin/python3.10
+Traceback (most recent call last):
+  File "/n/home06/pseth/.conda/envs/dv2/bin/torchrun", line 8, in <module>
+    sys.exit(main())
+  File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 355, in wrapper
+    return f(*args, **kwargs)
+  File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/distributed/run.py", line 892, in main
+    run(args)
+  File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/distributed/run.py", line 883, in run
+    elastic_launch(
+  File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 139, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/n/home06/pseth/.conda/envs/dv2/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 270, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+benchmark_moe_overlap.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2025-05-15_16:32:17
+  host      : holygpu8a16304.rc.fas.harvard.edu
+  rank      : 3 (local_rank: 3)
+  exitcode  : 1 (pid: 3370111)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

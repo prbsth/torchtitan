@@ -1,0 +1,9 @@
+{
+  "num_gpus": 4,
+  "experts_per_gpu": 4,
+  "num_layers": 2,
+  "batch_size": 4,
+  "iterations": 5,
+  "seq_lens": "32,64,128,256",
+  "output_dir": "benchmark_results"
+}
