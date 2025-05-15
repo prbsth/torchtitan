@@ -588,7 +588,7 @@ class MoE(nn.Module):
         self.combine_experts("down_proj")
 
         # Assuming worst case, 2x tokens are routed to one EP rank
-        overflow = 2
+        overflow = 4
         OnDeviceAllToAllV.max_output_len = (
             self.config.max_seq_len * self.num_experts_per_tok * overflow
         )
@@ -684,6 +684,9 @@ class MoE(nn.Module):
         if self.shuffle_method == "symm_mem":
             # Move input to the `token_send_buf` symm mem
             token_send_buf = self.get_send_buf()
+            if token_indices.shape[0] > token_send_buf.shape[0]:
+                print(f"ERROR: Buffer overflow! Need {token_indices.shape[0]} but buffer is {token_send_buf.shape[0]}")
+                raise RuntimeError("Buffer too small")
             token_send_buf[: token_indices.shape[0]].copy_(sorted_tokens)
             # Note: `out=` avoids copy, but it is not differentiable
             # torch.index_select(x, 0, idxs // topk_ids.shape[1], out=self.token_send_buf[: idxs.shape[0]])
@@ -898,6 +901,9 @@ class MoE(nn.Module):
         # Keep the seqlen dimension for later use
         seqlen_sorted_tokens = sorted_tokens.shape[0]
 
+        print(f"Rank {dist.get_rank()}: sorted_tokens shape: {sorted_tokens.shape}")
+        print(f"Rank {dist.get_rank()}: token_send_buf shape: {self.token_send_buf.shape}")
+        torch.cuda.current_stream().synchronize()
         # Exchange token count information (no gradient needed)
         with torch.no_grad():
             tokens_per_expert_group = tokens_per_expert.new_empty(
@@ -908,6 +914,9 @@ class MoE(nn.Module):
             )
             input_splits = tokens_per_expert.view(self.ep_size, -1).sum(dim=1)
             output_splits = tokens_per_expert_group.view(self.ep_size, -1).sum(dim=1)
+
+        print(f"Rank {dist.get_rank()}: input_splits: {input_splits}")
+        print(f"Rank {dist.get_rank()}: output_splits: {output_splits}")
 
         # Prepare symmetric memory buffers
         token_send_buf = self.get_send_buf()
