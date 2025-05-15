@@ -480,6 +480,7 @@ class MoE(nn.Module):
     # PURAB-CHANGE: different streams for copy and compute
     copy_stream: Optional[torch.cuda.Stream] = None
     comp_stream: Optional[torch.cuda.Stream] = None
+    _ready_event: Optional[torch.cuda.Event] = None
 
     def __init__(self, config):
         super().__init__()
@@ -531,6 +532,9 @@ class MoE(nn.Module):
             MoE.copy_stream = torch.cuda.Stream()
         if MoE.comp_stream is None:
             MoE.comp_stream = torch.cuda.Stream()
+        if MoE._ready_event is None:
+            MoE._ready_event = torch.cuda.Event()
+
         
 
     @classmethod
@@ -929,12 +933,20 @@ class MoE(nn.Module):
         default_stream = torch.cuda.current_stream()
 
         # Start async all-to-all communication on copy stream
+        # with torch.cuda.stream(MoE.copy_stream):
+        #     token_gather_buf, _ = OnDeviceAllToAllV.apply(
+        #         token_send_buf,
+        #         input_splits,
+        #         self.ep_group,
+        #     )
         with torch.cuda.stream(MoE.copy_stream):
             token_gather_buf, _ = OnDeviceAllToAllV.apply(
                 token_send_buf,
                 input_splits,
                 self.ep_group,
             )
+            # record “all transfers finished” on the copy stream
+            MoE._ready_event.record()
 
         # While communication is in flight, prepare local tokens for computation
         with torch.no_grad():
@@ -973,10 +985,12 @@ class MoE(nn.Module):
             )
 
         # Synchronize copy stream to ensure all transfers are complete
-        MoE.copy_stream.synchronize()
+        # MoE.copy_stream.synchronize()
 
         # Now process remote tokens that have arrived
         with torch.cuda.stream(MoE.comp_stream):
+            # wait until copy-stream has finished populating `token_gather_buf`
+            MoE.comp_stream.wait_event(MoE._ready_event)
             # Get all tokens and run group GEMM
             contig_tokens = token_gather_buf[permuted_indices]
             hidden_outputs = self._run_group_gemm(
@@ -1001,7 +1015,7 @@ class MoE(nn.Module):
             )
 
         # Synchronize to ensure return communication is complete
-        MoE.copy_stream.synchronize()
+        # MoE.copy_stream.synchronize()
 
         # Restore original token order
         returned_tokens = token_return_buf[:seqlen_sorted_tokens]
