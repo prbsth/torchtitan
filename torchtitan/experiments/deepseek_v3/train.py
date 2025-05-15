@@ -61,9 +61,9 @@ def run_full_model(
     model.train()
 
     # Apply data parallelism
-    fsdp_mesh = mesh["fsdp"]
+    # fsdp_mesh = mesh["fsdp"]
     hsdp_mesh = mesh["ep", "fsdp"]
-    print(f"{rank=}, fsdp_mesh: {fsdp_mesh}")
+    # print(f"{rank=}, fsdp_mesh: {fsdp_mesh}")
     print(f"{rank=}, hsdp_mesh: {hsdp_mesh}")
 
 
@@ -73,14 +73,14 @@ def run_full_model(
     # optimizer (Zero-1) and gradients (Zero-2), but not the model weights.
     # Reason: the MoE is "sparsely activated" compared to the dense model, thus
     # it will be ineconomical re-gather the weights.
-    for layer in model.model.layers.values():
-        # Apply FSDP to experts
-        if hasattr(layer.mlp, "experts"):
-            for expert in layer.mlp.experts.values():
-                fully_shard(expert, mesh=fsdp_mesh, reshard_after_forward=False)
-        # Apply HSDP to other parts such as attention, layernorm, because they
-        # are doing DDP on EP dimension
-        fully_shard(layer, mesh=hsdp_mesh, reshard_after_forward=False)
+    # for layer in model.model.layers.values():
+    #     # Apply FSDP to experts
+    #     if hasattr(layer.mlp, "experts"):
+    #         for expert in layer.mlp.experts.values():
+    #             fully_shard(expert, mesh=fsdp_mesh, reshard_after_forward=False)
+    #     # Apply HSDP to other parts such as attention, layernorm, because they
+    #     # are doing DDP on EP dimension
+    #     fully_shard(layer, mesh=hsdp_mesh, reshard_after_forward=False)
 
     # Apply HSDP on root model (lm_head, embeddings, etc)
     fully_shard(model, mesh=hsdp_mesh, reshard_after_forward=False)
@@ -147,8 +147,8 @@ def run_full_model(
 
 
 if __name__ == "__main__":
-    mesh = dist.init_device_mesh("cuda", (1, 2, 2), mesh_dim_names=("pp", "ep", "fsdp"))
-
+    # mesh = dist.init_device_mesh("cuda", (1, 2, 2), mesh_dim_names=("pp", "ep", "fsdp"))
+    mesh = dist.init_device_mesh("cuda", (1, 4), mesh_dim_names=("pp", "ep"))
     run_full_model(mesh)
 
     dist.destroy_process_group()
