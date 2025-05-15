@@ -474,7 +474,7 @@ class MoE(nn.Module):
     group_gemm_strategies = None
     # which group gemm to use?
     group_mm = (
-        "torchfp8"  # fp8 options = ["torchfp8", "dsgemm"] bf16 = ["torch", , "torchao"]
+        "torch"  # fp8 options = ["torchfp8", "dsgemm"] bf16 = ["torch", , "torchao"]
     )
 
     # PURAB-CHANGE: different streams for copy and compute
