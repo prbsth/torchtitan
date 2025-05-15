@@ -14,7 +14,7 @@ from torch.distributed.pipelining import PipelineStage
 from torch.distributed.pipelining.schedules import (
     _PipelineSchedule,
     get_schedule_class,
-    ScheduleZBVZeroBubble,
+    # ScheduleZBVZeroBubble,
 )
 
 from torchtitan.components.loss import LossFunction
@@ -140,7 +140,7 @@ def pipeline_llama_manual_split(
     models = []
 
     schedule_class = get_schedule_class(parallelism_config.pipeline_parallel_schedule)
-    style = "v" if schedule_class == ScheduleZBVZeroBubble else "loop"
+    style = "loop"
 
     for stage_idx in stage_ids_this_rank(pp_rank, pp_size, num_stages, style=style):
         start_layer = splits[stage_idx - 1] if stage_idx > 0 else None
