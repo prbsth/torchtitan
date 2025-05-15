@@ -143,7 +143,7 @@ def run_full_model(
 
 
 if __name__ == "__main__":
-    mesh = dist.init_device_mesh("cuda", (2, 2, 2), mesh_dim_names=("pp", "ep", "fsdp"))
+    mesh = dist.init_device_mesh("cuda", (1, 2, 2), mesh_dim_names=("pp", "ep", "fsdp"))
 
     run_full_model(mesh)
 
