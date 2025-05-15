@@ -1045,108 +1045,76 @@ class MoE(nn.Module):
 
     def moe_on_device(self, x, topk_ids, topk_weight):
         (
-            sorted_tokens,        # Shape: (total_tokens_for_routing, hidden_dim)
-            token_indices_for_scatter, # Shape: (total_tokens_for_routing), indices to scatter final results
-            tokens_per_expert,    # Shape: (num_global_experts), count of tokens from local `x` for each global expert
+            sorted_tokens,
+            token_indices_for_scatter, 
+            tokens_per_expert,
         ) = self.sort_tokens(x, topk_ids, topk_weight)
 
-        seqlen_sorted_tokens = sorted_tokens.shape[0] # Total tokens this rank is responsible for routing
+        seqlen_sorted_tokens = sorted_tokens.shape[0]
 
-        # print(f"Rank {dist.get_rank()}: sorted_tokens shape: {sorted_tokens.shape}") # For debugging
-
-        # --- Stage 1: Small All-to-All for expert counts (Synchronous, provides input for generate_permute_indices) ---
-        # expert_counts_received_layout_full_shape is `tokens_per_expert_group` from the original implementation.
-        # It describes the layout of tokens this rank will receive, often source-rank major then expert major.
-        expert_counts_received_layout_full_shape = tokens_per_expert.new_empty(tokens_per_expert.shape[0])
-        dist.all_to_all_single(expert_counts_received_layout_full_shape, tokens_per_expert, group=self.ep_group)
-        
-        # --- Stage 2: Launch Asynchronous Data All-to-All (A2A1) on MoE.copy_stream ---
-        token_gather_buf = self.get_gather_buf() # This is MoE.token_gather_buf
-        with torch.no_grad(): # input_splits_A2A1 is based on tokens_per_expert (what this rank sends)
+        # --- Stage 1: Calculate send splits for A2A1 ---
+        with torch.no_grad():
             input_splits_A2A1 = tokens_per_expert.view(self.ep_size, -1).sum(dim=1)
 
-        # This will store the actual number of tokens this rank received from each source rank during A2A1.
-        # It's crucial for correctly sending data back in A2A2.
-        actual_recv_splits_A2A1_from_op = None 
+        # --- Sanity Checks for A2A1 inputs ---
+        expected_send_total = sorted_tokens.shape[0]
+        actual_send_total = input_splits_A2A1.sum().item()
+        print(f"Rank {dist.get_rank()}: A2A1 Pre-Check: sorted_tokens.shape[0]={expected_send_total}, "
+            f"sum(input_splits_A2A1)={actual_send_total}, input_splits_A2A1={input_splits_A2A1.tolist()}", flush=True)
+        if expected_send_total != actual_send_total:
+            raise RuntimeError(f"Rank {dist.get_rank()} token count mismatch for A2A1 send.")
+        if (input_splits_A2A1 < 0).any():
+            raise RuntimeError(f"Rank {dist.get_rank()} negative send split for A2A1.")
 
-        with torch.cuda.stream(MoE.copy_stream):
-            # OnDeviceAllToAllV.apply will:
-            # 1. Copy `sorted_tokens` into `MoE.token_send_buf` (internal to OnDeviceAllToAllV).
-            # 2. Perform all_to_all_single from `MoE.token_send_buf` to `MoE.token_gather_buf`.
-            # 3. Return a view of `MoE.token_gather_buf` and the actual receive split sizes.
-            _, actual_recv_splits_A2A1_from_op = OnDeviceAllToAllV.apply(
-                sorted_tokens,          # Data this rank sends
-                input_splits_A2A1,      # How `sorted_tokens` is split for sending
-                self.ep_group
-            )
-            # `actual_recv_splits_A2A1_from_op` now holds the tensor with receive counts.
-            MoE._ready_event.record(MoE.copy_stream) # Signal completion of A2A1 data transfer
+        torch.cuda.synchronize() # Ensure all preparatory CPU ops are done and inputs are on device
 
-        # --- Stage 3: Overlapped Computation: Generate Permutation Indices (CPU bound, on default stream) ---
-        # This uses `expert_counts_received_layout_full_shape` from Stage 1 (A2A of counts).
-        # It does NOT depend on the actual data in `token_gather_buf` from A2A1 yet.
-        permuted_indices, m_sizes, m_offsets = generate_permute_indices(
-            expert_counts_received_layout_full_shape, # This is `tokens_per_expert_group`
-            self.experts_per_rank,
-            self.ep_size,
-            token_gather_buf.shape[0], # Full capacity of the gather buffer
-            ALIGN_SIZE_M,
-        )
-
-        # --- Stage 4: Group GEMM Computation (on MoE.comp_stream) ---
-        with torch.cuda.stream(MoE.comp_stream):
-            MoE.comp_stream.wait_event(MoE._ready_event) # Wait for A2A1 data in token_gather_buf
-
-            # Now token_gather_buf contains tokens from other ranks.
-            # permuted_indices reorder these tokens for expert-contiguity.
-            contig_tokens = token_gather_buf[permuted_indices]
+        # --- Stage 2: Launch Asynchronous Data All-to-All (A2A1) on MoE.copy_stream ---
+        print(f"Rank {dist.get_rank()}: Launching A2A1 on MoE.copy_stream...", flush=True)
+        actual_recv_splits_A2A1_from_op = None
+        try:
+            with torch.cuda.stream(MoE.copy_stream):
+                # Assuming OnDeviceAllToAllV.apply returns (output_tensor_view, output_splits)
+                output_tensor_view_A2A1, actual_recv_splits_A2A1_from_op = OnDeviceAllToAllV.apply(
+                    sorted_tokens,
+                    input_splits_A2A1,
+                    self.ep_group
+                )
+                MoE._ready_event.record(MoE.copy_stream)
             
-            hidden_outputs = self._run_group_gemm(
-                contig_tokens,
-                m_sizes,
-                m_offsets,
-            )
+            print(f"Rank {dist.get_rank()}: A2A1 submitted to MoE.copy_stream. Now synchronizing event...", flush=True)
+            MoE._ready_event.synchronize() # Synchronize with the event directly
+            # Or MoE.copy_stream.synchronize()
+            print(f"Rank {dist.get_rank()}: A2A1 event synchronization complete.", flush=True)
 
-            # Results from GEMM are in hidden_outputs. Scatter them back into token_gather_buf
-            # (which is aliased by processed_tokens_storage) using the same permuted_indices.
-            processed_tokens_storage = self.get_gather_buf() # Re-gets MoE.token_gather_buf
-            processed_tokens_storage[permuted_indices] = hidden_outputs
-            
-            MoE.comp_stream.record(MoE._ready_event) # Signal completion of GEMM and scatter
+            if actual_recv_splits_A2A1_from_op is not None:
+                print(f"Rank {dist.get_rank()}: A2A1 Success. actual_recv_splits_A2A1_from_op: "
+                    f"{actual_recv_splits_A2A1_from_op.tolist()}, "
+                    f"sum: {actual_recv_splits_A2A1_from_op.sum().item()}", flush=True)
+                # You could also try a tiny operation on output_tensor_view_A2A1 here
+                # print(f"Rank {dist.get_rank()}: Output tensor view from A2A1, e.g., shape {output_tensor_view_A2A1.shape}", flush=True)
 
-        # --- Stage 5: Second All-to-All (A2A2 - EP to DP): Send processed results back (on MoE.copy_stream) ---
-        with torch.cuda.stream(MoE.copy_stream):
-            MoE.copy_stream.wait_event(MoE._ready_event) # Wait for GEMM results
+            else:
+                print(f"Rank {dist.get_rank()}: actual_recv_splits_A2A1_from_op is None after A2A1.", flush=True)
 
-            # Data to send back is `processed_tokens_storage` (which is MoE.token_gather_buf after GEMM).
-            # Send splits are `actual_recv_splits_A2A1_from_op` (send tokens back based on how many were received from each source).
-            token_return_buf_view, _ = OnDeviceAllToAllV.apply(
-                processed_tokens_storage,
-                actual_recv_splits_A2A1_from_op, 
-                self.ep_group,
-            )
-            MoE.copy_stream.record(MoE._ready_event) # Signal completion of A2A2
+        except RuntimeError as e:
+            print(f"Rank {dist.get_rank()}: EXCEPTION during A2A1 or its synchronization: {e}", flush=True)
+            raise e # Re-throw to see the full stack
 
-        # --- Stage 6: Finalize Output (on default stream) ---
-        torch.cuda.current_stream().wait_event(MoE._ready_event) # Sync default stream with A2A2 completion
-        
-        # token_return_buf_view is a view of MoE.token_gather_buf, now containing the final returned tokens.
-        # Trim to the number of tokens this rank originally routed.
-        returned_tokens = token_return_buf_view[:seqlen_sorted_tokens]
+        # --- Return a dummy output to allow the training script to proceed minimally ---
+        # This bypasses GEMM and the second A2A for this test.
+        # If the code reaches here without error, A2A1 is likely fine.
+        final_output_placeholder = torch.zeros_like(sorted_tokens)
+        final_output_placeholder[token_indices_for_scatter] = torch.zeros_like(sorted_tokens) # Fill with zeros
 
-        # Scatter `returned_tokens` back to their original pre-sorted, pre-routing positions.
-        final_output_placeholder = torch.empty_like(sorted_tokens) # Same shape as input to A2A1
-        final_output_placeholder[token_indices_for_scatter] = returned_tokens
-
-        # Apply expert weights and sum
         final_out = (
-            final_output_placeholder.view(*topk_ids.shape, -1) # Reshape for weighting
+            final_output_placeholder.view(*topk_ids.shape, -1)
             .type(topk_weight.dtype)
-            .mul_(topk_weight.unsqueeze(dim=-1)) # Apply weights
-            .sum(dim=1) # Sum over the experts dimension
-            .type(returned_tokens.dtype)
+            .mul_(topk_weight.unsqueeze(dim=-1))
+            .sum(dim=1)
+            .type(x.dtype) # Use x.dtype as returned_tokens.dtype is not available here
         )
-        return final_out
+        print(f"Rank {dist.get_rank()}: moe_on_device (isolated test) returning.", flush=True)
+        return final_out # Return dummy output of correct shape/type
 
 class Attention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
