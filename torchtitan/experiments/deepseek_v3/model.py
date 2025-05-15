@@ -481,7 +481,7 @@ class MoE(nn.Module):
     copy_stream: Optional[torch.cuda.Stream] = None
     comp_stream: Optional[torch.cuda.Stream] = None
     _ready_event: Optional[torch.cuda.Event] = None
-
+    _combined_submods: Optional[set] = None
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -569,7 +569,7 @@ class MoE(nn.Module):
         }
 
     def combine_experts(self, submod_name: str):
-        if submod_name in self._combined_submod:
+        if submod_name in self._combined_submods:
             return
         all_weights = []
         for expert_key, expert_module in self.experts.items():
@@ -607,7 +607,7 @@ class MoE(nn.Module):
             lin = expert_module.get_submodule(submod_name)
             if hasattr(lin, 'weight'): # Check if it even has a weight attr anymore
                 lin.weight = None
-
+        self._combined_submods.add(submod_name)
     # This function is used to create a symm mem buffer for MoE's. It is for
     # shuffling tokens fully "on-device", as compared to traditional torch
     # all_to_all APIs which require a GPU-to-CPU sync of the splits.  If a user
