@@ -569,6 +569,8 @@ class MoE(nn.Module):
         }
 
     def combine_experts(self, submod_name: str):
+        if submod_name in self._combined_submod:
+            return
         all_weights = []
         for expert_key, expert_module in self.experts.items():
             # ---- START MINIMAL DEBUG ----
