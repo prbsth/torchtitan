@@ -636,7 +636,7 @@ class MoE(nn.Module):
         # Input buffer for DP-to-EP shuffle
         MoE.token_send_buf = symm_mem.empty(
             self.config.max_seq_len
-            * self.num_experts_per_tok,  # seq len * top k (flattened)
+            * self.num_experts_per_tok * overflow,  # seq len * top k (flattened)
             self.config.hidden_size,  # hidden dim
             dtype=dtype,
             device=device,
