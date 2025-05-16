@@ -3,8 +3,8 @@ import re
 import csv
 
 # 1. Sequence lengths and batch sizes to test
-seq_lens = [32, 64, 128, 256]
-batch_sizes = [4, 8, 16, 32]
+seq_lens = [32, 64, 128, 256, 512, 1024]
+batch_sizes = [4, 8, 16, 32, 64, 128]
 # 2. Storage for parsed results
 results = []
 
