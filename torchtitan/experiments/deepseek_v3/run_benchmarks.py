@@ -4,17 +4,18 @@ import csv
 
 # 1. Sequence lengths to test
 seq_lens = [32, 64, 128, 256]
-
+batch_sizes = [4, 8, 16, 32]
 # 2. Storage for parsed results
 results = []
 
 for seq_len in seq_lens:
-    cmd = [
-        "torchrun", "--standalone", "--nproc-per-node=4",
-        "benchmark_moe_overlap.py",
-        "--num_layers=2",
-        "--batch_size=4",
-        f"--seq_len={seq_len}",
+    for batch_size in batch_sizes:
+        cmd = [
+            "torchrun", "--standalone", "--nproc-per-node=4",
+            "benchmark_moe_overlap.py",
+            "--num_layers=2",
+            f"--batch_size={batch_size}",
+            f"--seq_len={seq_len}",
         "--iterations=2"
     ]
     print(f"\n▶ Running benchmark for seq_len={seq_len}...")
@@ -43,6 +44,7 @@ for seq_len in seq_lens:
 
     results.append({
         'seq_len':               seq_len,
+        'batch_size':            batch_size,
         'vanilla_time_ms':       vanilla_time,
         'overlap_time_ms':       overlap_time,
         'speedup':               speedup,
@@ -52,10 +54,11 @@ for seq_len in seq_lens:
     })
 
 # 5. Write out CSV
-csv_path = "benchmark_results.csv"
+csv_path = "benchmark_results_batch.csv"
 with open(csv_path, "w", newline="") as f:
     fieldnames = [
         'seq_len',
+        'batch_size',
         'vanilla_time_ms',
         'overlap_time_ms',
         'speedup',
