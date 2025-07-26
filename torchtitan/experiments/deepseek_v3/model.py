@@ -645,10 +645,10 @@ class MoE(nn.Module):
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         if self.shuffle_method == "symm_mem":
             y = self.moe_on_device(hidden_states, topk_idx, topk_weight)
-            if MoE.copy_stream is not None:
-                MoE.copy_stream.synchronize()
-            if MoE.comp_stream is not None:
-                MoE.comp_stream.synchronize()
+            # if MoE.copy_stream is not None:
+            #     MoE.copy_stream.synchronize()
+            # if MoE.comp_stream is not None:
+            #     MoE.comp_stream.synchronize()
         else:  # "torch_all_to_all"
             y = self.moe_forward(hidden_states, topk_idx, topk_weight)
 
@@ -839,7 +839,6 @@ class MoE(nn.Module):
         actual_recv_splits_A2A1_from_op = None
         try:
             with torch.cuda.stream(MoE.copy_stream):
-                # Assuming OnDeviceAllToAllV.apply returns (output_tensor_view, output_splits)
                 token_send_buf = self.get_send_buf()
                 if sorted_tokens.shape[0] > token_send_buf.shape[0]:
                     print(f"ERROR: Buffer overflow! Need {sorted_tokens.shape[0]} but buffer is {token_send_buf.shape[0]}")
@@ -850,12 +849,39 @@ class MoE(nn.Module):
                     input_splits_A2A1,
                     self.ep_group
                 )
-                MoE._ready_event.record(MoE.copy_stream)
             
-            print(f"Rank {dist.get_rank()}: A2A1 submitted to MoE.copy_stream. Now synchronizing event...", flush=True)
-            MoE._ready_event.synchronize() # Synchronize with the event directly
-            # Or MoE.copy_stream.synchronize()
-            print(f"Rank {dist.get_rank()}: A2A1 event synchronization complete.", flush=True)
+            # print(f"Rank {dist.get_rank()}: A2A1 submitted to MoE.copy_stream. Now synchronizing event...", flush=True)
+            # MoE._ready_event.synchronize() # Synchronize with the event directly
+            # # Or MoE.copy_stream.synchronize()
+            # print(f"Rank {dist.get_rank()}: A2A1 event synchronization complete.", flush=True)
+            # Record an event that marks completion of this rank’s send;
+            # we will only wait on it inside the compute stream later.
+            MoE._ready_event.record(MoE.copy_stream)
+            # ------------------------------------------------------------------
+        
+        #  Stage‑2  : expert compute on MoE.comp_stream
+
+            with torch.cuda.stream(MoE.comp_stream):
+                # Wait only for our own send to finish.
+                MoE.comp_stream.wait_event(MoE._ready_event)
+
+                # 2‑a)  build view into the received buffer
+                gathered_tokens_view = output_tensor_view_A2A1  
+
+                # 2‑b)  compute per‑expert start/stop offsets
+                m_sizes = tokens_per_expert.view(self.ep_size, -1)[self.ep_rank]
+                m_offsets = torch.cumsum(F.pad(m_sizes, (1, 0)), 0)[:-1]
+
+                # 2‑c) group gemm
+                processed_tokens_view = self._run_group_gemm(
+                                            gathered_tokens_view,
+                                            m_sizes,
+                                            m_offsets
+                                        )
+
+                # When kernels finish, record an event so copy_stream can
+                # start A2A₂ without waiting for the *entire* buffer.
+                MoE._ready_event.record(MoE.comp_stream)
 
             if actual_recv_splits_A2A1_from_op is not None:
                 print(f"Rank {dist.get_rank()}: A2A1 Success. actual_recv_splits_A2A1_from_op: "
@@ -869,23 +895,33 @@ class MoE(nn.Module):
 
         except RuntimeError as e:
             print(f"Rank {dist.get_rank()}: EXCEPTION during A2A1 or its synchronization: {e}", flush=True)
-            raise e # Re-throw to see the full stack
+            raise e 
 
-        # --- Return a dummy output to allow the training script to proceed minimally ---
-        # This bypasses GEMM and the second A2A for this test.
-        # If the code reaches here without error, A2A1 is likely fine.
-        final_output_placeholder = torch.zeros_like(sorted_tokens)
-        final_output_placeholder[token_indices_for_scatter] = torch.zeros_like(sorted_tokens) # Fill with zeros
+        # Stage‑3 : EP -> DP shuffle on copy_stream              
+        with torch.cuda.stream(MoE.copy_stream):
+            MoE.copy_stream.wait_event(MoE._ready_event)
 
+            token_return_buf, _ = OnDeviceAllToAllV.apply(
+                processed_tokens_view,        # view, no copy
+                actual_recv_splits_A2A1_from_op,                # reverse of A2A1
+                self.ep_group
+            )
+        
+
+        # ------------------------------------------------------------------
+        #  Stage‑4  : Final reduction (weighted sum of top‑k)
+        returned_tokens = token_return_buf[:seqlen_sorted_tokens]
+
+        output_tokens = torch.empty_like(returned_tokens)
+        output_tokens[token_indices_for_scatter] = returned_tokens
         final_out = (
-            final_output_placeholder.view(*topk_ids.shape, -1)
+            output_tokens.view(*topk_ids.shape, -1)
             .type(topk_weight.dtype)
             .mul_(topk_weight.unsqueeze(dim=-1))
             .sum(dim=1)
-            .type(x.dtype) # Use x.dtype as returned_tokens.dtype is not available here
+            .type(x.dtype)
         )
-        print(f"Rank {dist.get_rank()}: moe_on_device (isolated test) returning.", flush=True)
-        return final_out # Return dummy output of correct shape/type
+        return final_out
 
 class Attention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
